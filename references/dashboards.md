@@ -2,6 +2,8 @@
 
 **目标**：管理 `docs/dashboards/` 下的 HTML 交互看板（L2 界面层），把实验数据的机器渲染、人工校对、论文引用三条链清晰分开。
 
+`docs/dashboards/` 不存在时由首次 `new` 按需创建；默认 `init` 不预建。本流程需要同步索引时遵循 [schema.md](schema.md)。
+
 **参数**：`/research dashboard [list|new <slug>|render <slug>|status]`
 
 - `list`（或无参数）：列出所有已有 dashboard 和上次渲染时间
@@ -189,9 +191,9 @@ if __name__ == "__main__":
 - 需要手动补充：`SOURCES` 数据路径、`HTML_TEMPLATE` 的 `<script>` 渲染逻辑
 - 补完后运行 `/research dashboard render <slug>`
 
-**d. 执行 [P3: README 索引同步]**
+**d. 同步 README 索引**
 
-新 dashboard 应进 `docs/README.md` 索引。
+新 dashboard 应按 [schema.md](schema.md) 的规则进入 `docs/README.md` 索引。
 
 ---
 
@@ -207,7 +209,7 @@ if __name__ == "__main__":
 **b. 运行生成器**
 
 ```bash
-python docs/dashboards/render/<slug>.py
+python3 docs/dashboards/render/<slug>.py
 ```
 
 从项目根运行，工作目录就是项目根。
@@ -262,9 +264,9 @@ dashboard 视为 stale 当：
 
 | Phase | 协作点 |
 |-------|-------|
-| Init | 场景 A/B2 创建 `docs/dashboards/` + `render/` + `dashboards/README.md` 骨架 |
-| Status | 扫描时列出 dashboards，标记 stale 数量 |
-| P3 | README 索引扫描范围包括 `docs/dashboards/*.html`，类型列标 `HTML` |
+| Init | 仅 `--full` 预建 dashboard；默认由首次 `new` 按需创建 |
+| Status | `--full` 扫描 dashboards，标记缺输出或缺生成器 |
+| Schema | README 索引扫描 `docs/dashboards/*.html`，类型列标 `HTML` |
 
 ---
 

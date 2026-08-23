@@ -1,0 +1,469 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+REPO = Path(__file__).resolve().parents[1]
+AUDIT = REPO / "scripts" / "research_audit.py"
+RETIRE = REPO / "scripts" / "retire.py"
+INSTALL = REPO / "install.sh"
+
+
+def run_script(script: Path, *args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(script), *args],
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+
+
+class ResearchAuditTests(unittest.TestCase):
+    def test_reports_missing_v4_required_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "docs").mkdir()
+            (root / "docs" / "README.md").write_text(
+                "---\nschema_version: 4\nstatus: active\n---\n", encoding="utf-8"
+            )
+            result = run_script(AUDIT, "--root", str(root), "--json", cwd=root)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            report = json.loads(result.stdout)
+            issue = next(item for item in report["issues"] if item["code"] == "required-entry-missing")
+            self.assertIn("docs/project/overview.md", issue["detail"])
+            self.assertIn("docs/handoffs/history/resolved", issue["detail"])
+            self.assertIn("docs/handoffs/history/superseded", issue["detail"])
+            self.assertIn("archive/docs", issue["detail"])
+            self.assertNotIn("CLAUDE.md", issue["detail"])
+            self.assertNotIn("AGENTS.md", issue["detail"])
+            entry_issue = next(item for item in report["issues"] if item["code"] == "project-entry-missing")
+            self.assertIn("CLAUDE.md", entry_issue["detail"])
+            self.assertIn("AGENTS.md", entry_issue["detail"])
+
+    def test_any_existing_project_entry_combination_is_valid(self) -> None:
+        for entry_names in (("AGENTS.md",), ("CLAUDE.md",), ("CLAUDE.md", "AGENTS.md")):
+            with self.subTest(entry_names=entry_names), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                (root / "docs" / "project").mkdir(parents=True)
+                (root / "docs" / "handoffs" / "history" / "resolved").mkdir(parents=True)
+                (root / "docs" / "handoffs" / "history" / "superseded").mkdir()
+                (root / "archive" / "docs").mkdir(parents=True)
+                (root / "docs" / "README.md").write_text(
+                    "---\nschema_version: 4\nstatus: active\n---\n", encoding="utf-8"
+                )
+                (root / "docs" / "project" / "overview.md").write_text(
+                    "overview\n", encoding="utf-8"
+                )
+                for entry_name in entry_names:
+                    (root / entry_name).write_text("# Project instructions\n", encoding="utf-8")
+
+                result = run_script(AUDIT, "--root", str(root), "--json", cwd=root)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                report = json.loads(result.stdout)
+                self.assertEqual(report["project_entries"], sorted(entry_names))
+                codes = {issue["code"] for issue in report["issues"]}
+                self.assertNotIn("project-entry-missing", codes)
+                self.assertNotIn("required-entry-missing", codes)
+
+    def test_history_subdirectories_are_counted_and_status_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            resolved = root / "docs" / "handoffs" / "history" / "resolved"
+            superseded = root / "docs" / "handoffs" / "history" / "superseded"
+            resolved.mkdir(parents=True)
+            superseded.mkdir()
+            (resolved / "done.md").write_text("---\nstatus: resolved\n---\n", encoding="utf-8")
+            (superseded / "carried.md").write_text(
+                "---\nstatus: superseded\n---\n", encoding="utf-8"
+            )
+            (resolved / "wrong.md").write_text("---\nstatus: active\n---\n", encoding="utf-8")
+            (resolved.parent / "unclassified.md").write_text(
+                "---\nstatus: resolved\n---\n", encoding="utf-8"
+            )
+
+            result = run_script(AUDIT, "--root", str(root), "--json", cwd=root)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["history_handoffs"], 4)
+            self.assertEqual(report["resolved_handoffs"], 2)
+            self.assertEqual(report["superseded_handoffs"], 1)
+            codes = {issue["code"] for issue in report["issues"]}
+            self.assertIn("handoff-history-unclassified", codes)
+            self.assertIn("handoff-history-status-mismatch", codes)
+
+    def test_reports_schema_handoff_and_ignored_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / ".gitignore").write_text("/paper/\n", encoding="utf-8")
+            (root / "docs" / "handoffs" / "history").mkdir(parents=True)
+            (root / "docs" / "handoffs" / "resolved").mkdir()
+            (root / "docs" / "README.md").write_text(
+                "---\nschema_version: 4\nstatus: active\n---\n", encoding="utf-8"
+            )
+            (root / "docs" / "handoffs" / "2026-01-01-1200-test.md").write_text(
+                "---\nstatus: active\n---\n\n## 下一步\n继续测试\n", encoding="utf-8"
+            )
+            (root / "paper").mkdir()
+            (root / "paper" / "main.tex").write_text("\\documentclass{article}\n", encoding="utf-8")
+            (root / "paper" / "main.synctex.gz").write_bytes(b"generated")
+
+            result = run_script(AUDIT, "--root", str(root), "--json", cwd=root)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["schema_version"], 4)
+            self.assertEqual(len(report["active_handoffs"]), 1)
+            codes = {issue["code"] for issue in report["issues"]}
+            self.assertIn("legacy-resolved-directory", codes)
+            self.assertIn("ignored-important-source", codes)
+            self.assertIn("paper/main.tex", report["ignored_important_files"])
+            self.assertNotIn("paper/main.synctex.gz", report["ignored_important_files"])
+
+    def test_full_audit_reports_multiple_active_handoffs_and_build_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "docs" / "handoffs" / "history").mkdir(parents=True)
+            (root / "docs" / "README.md").write_text(
+                "---\nschema_version: 4\nstatus: active\n---\n", encoding="utf-8"
+            )
+            for index in (1, 2):
+                (root / "docs" / "handoffs" / f"2026-01-0{index}-1200-test.md").write_text(
+                    "---\nstatus: active\n---\n", encoding="utf-8"
+                )
+            (root / "paper").mkdir()
+            (root / "paper" / "main.aux").write_text("generated", encoding="utf-8")
+            (root / "paper" / "main.pdf").write_bytes(b"%PDF-1.4\n")
+            (root / "paper" / "older.pdf").write_bytes(b"%PDF-1.4\n")
+            (root / "docs" / "dashboards").mkdir(parents=True)
+            (root / "docs" / "dashboards" / "results.html").write_text("<html></html>", encoding="utf-8")
+
+            result = run_script(AUDIT, "--root", str(root), "--full", "--json", cwd=root)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            report = json.loads(result.stdout)
+            codes = {issue["code"] for issue in report["issues"]}
+            self.assertIn("multiple-active-handoffs", codes)
+            self.assertIn("latex-build-artifacts", codes)
+            self.assertIn("multiple-paper-pdfs", codes)
+            self.assertIn("dashboard-generator-missing", codes)
+            human = run_script(AUDIT, "--root", str(root), "--full", cwd=root)
+            self.assertIn("dashboard-generator-missing", human.stdout)
+
+    def test_full_audit_rejects_broken_archived_paper_package(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "docs" / "project").mkdir(parents=True)
+            (root / "docs" / "handoffs" / "history").mkdir(parents=True)
+            (root / "archive" / "docs").mkdir(parents=True)
+            (root / "docs" / "README.md").write_text(
+                "---\nschema_version: 4\nstatus: active\n---\n", encoding="utf-8"
+            )
+            (root / "docs" / "project" / "overview.md").write_text("overview\n", encoding="utf-8")
+            (root / "CLAUDE.md").write_text("# Project\n", encoding="utf-8")
+            (root / "AGENTS.md").write_text("@ CLAUDE.md\n", encoding="utf-8")
+            broken = root / "archive" / "docs" / "paper" / "2026-08-23-broken"
+            broken.mkdir(parents=True)
+            (broken / "README.md").write_text("---\nstatus: archived\n---\n", encoding="utf-8")
+
+            result = run_script(AUDIT, "--root", str(root), "--full", "--json", cwd=root)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            report = json.loads(result.stdout)
+            codes = {issue["code"] for issue in report["issues"]}
+            self.assertIn("invalid-paper-archive", codes)
+            self.assertIn("paper-archive-not-tracked", codes)
+            self.assertIn("legacy-agents-pointer", codes)
+            self.assertEqual(report["archived_documents"], 1)
+
+
+class RetireTests(unittest.TestCase):
+    def make_project(self, root: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        paper = root / "paper"
+        (paper / "figures").mkdir(parents=True)
+        (paper / "main.tex").write_text(
+            "\\documentclass{article}\n\\begin{document}\nTest\n\\end{document}\n",
+            encoding="utf-8",
+        )
+        (paper / "references.bib").write_text("", encoding="utf-8")
+        (paper / "figures" / "plot.png").write_bytes(b"png")
+        (paper / "banner.png").write_bytes(b"png")
+        (paper / "main.pdf").write_bytes(b"%PDF-1.4\nsubmitted\n")
+        (paper / "main.aux").write_text("generated", encoding="utf-8")
+        (paper / "main-round1.pdf").write_bytes(b"%PDF-1.4\nold\n")
+
+    def archive_path(self, root: Path, slug: str = "course-paper") -> Path:
+        return root / "archive" / "docs" / "paper" / f"2026-08-23-{slug}"
+
+    def test_retire_is_dry_run_then_creates_minimal_verified_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            archive = self.archive_path(root)
+
+            dry = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--allow-unverified",
+                cwd=root,
+            )
+            self.assertEqual(dry.returncode, 0, dry.stdout)
+            self.assertFalse(archive.exists())
+            self.assertIn("archive/docs/paper/2026-08-23-course-paper", dry.stdout)
+
+            apply = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--allow-unverified",
+                "--apply",
+                cwd=root,
+            )
+            self.assertEqual(apply.returncode, 0, apply.stdout)
+            self.assertTrue((archive / "submitted.pdf").is_file())
+            self.assertTrue((archive / "source" / "main.tex").is_file())
+            self.assertTrue((archive / "source" / "figures" / "plot.png").is_file())
+            self.assertTrue((archive / "source" / "banner.png").is_file())
+            self.assertFalse((archive / "source" / "main.aux").exists())
+            self.assertFalse((archive / "source" / "main-round1.pdf").exists())
+            self.assertTrue((root / "paper" / "main.tex").is_file())
+            self.assertIn("active source is not deleted", apply.stdout)
+            readme = (archive / "README.md").read_text(encoding="utf-8")
+            self.assertIn("status: archived", readme)
+            self.assertIn("retired: 2026-08-23", readme)
+
+            for line in (archive / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
+                expected, rel = line.split("  ", 1)
+                actual = hashlib.sha256((archive / rel).read_bytes()).hexdigest()
+                self.assertEqual(actual, expected)
+
+            audit = run_script(AUDIT, "--root", str(root), "--full", "--json", cwd=root)
+            report = json.loads(audit.stdout)
+            self.assertEqual(report["archived_documents"], 1)
+            self.assertNotIn(
+                "invalid-paper-archive",
+                {issue["code"] for issue in report["issues"]},
+            )
+
+            duplicate = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--allow-unverified",
+                "--apply",
+                cwd=root,
+            )
+            self.assertEqual(duplicate.returncode, 2, duplicate.stdout)
+            self.assertIn("拒绝覆盖", duplicate.stdout)
+
+    @unittest.skipUnless(shutil.which("latexmk"), "latexmk is required for isolated compile test")
+    def test_retire_compiles_isolated_source_when_latexmk_is_available(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "compiled-paper",
+                "--date",
+                "2026-08-23",
+                "--apply",
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("verification: passed", result.stdout)
+            readme = self.archive_path(root, "compiled-paper") / "README.md"
+            self.assertIn("verification: passed", readme.read_text(encoding="utf-8"))
+
+    def test_retire_rejects_a_github_oversized_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            oversized = root / "paper" / "figures" / "large.png"
+            with oversized.open("wb") as handle:
+                handle.seek(100 * 1024 * 1024 - 1)
+                handle.write(b"x")
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("100 MiB", result.stdout)
+
+    def test_retire_refuses_pdf_only_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "paper").mkdir()
+            (root / "paper" / "main.pdf").write_bytes(b"%PDF-1.4\nsubmitted\n")
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("未找到可归档源码", result.stdout)
+
+    def test_retire_failure_is_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--main-tex",
+                "missing.tex",
+                "--allow-unverified",
+                "--apply",
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("主 TeX 不存在", result.stdout)
+            self.assertFalse(self.archive_path(root).exists())
+            paper_archive = root / "archive" / "docs" / "paper"
+            self.assertFalse(any(paper_archive.glob(".course-paper-*")))
+
+    def test_retire_rejects_date_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "project"
+            root.mkdir()
+            self.make_project(root)
+            escaped = root.parent / "escaped-course-paper"
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "../../../escaped",
+                "--apply",
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("YYYY-MM-DD", result.stdout)
+            self.assertFalse(escaped.exists())
+
+    def test_retire_refuses_gitignored_archive_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            (root / ".gitignore").write_text("/archive/\n", encoding="utf-8")
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--apply",
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("Git 忽略", result.stdout)
+            self.assertFalse((root / "archive" / "docs" / "paper").exists())
+
+    def test_retire_includes_explicit_top_level_pdf_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            required = root / "paper" / "required.pdf"
+            required.write_bytes(b"%PDF-1.4\nfigure\n")
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--include",
+                "required.pdf",
+                "--allow-unverified",
+                "--apply",
+                cwd=root,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertTrue((self.archive_path(root) / "source" / "required.pdf").is_file())
+
+
+class InstallerTests(unittest.TestCase):
+    def test_local_install_is_an_exact_mirror_and_does_not_edit_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            claude = root / "claude"
+            codex = root / "codex"
+            for target in (claude / "skills" / "research", codex / "skills" / "research"):
+                (target / "references").mkdir(parents=True)
+                (target / "scripts").mkdir()
+                (target / "references" / "stale.md").write_text("stale", encoding="utf-8")
+                (target / "scripts" / "stale.py").write_text("stale", encoding="utf-8")
+            settings = claude / "settings.json"
+            original_settings = '{"hooks":{"Stop":[{"hooks":[{"command":"docs-hook.sh"}]}]}}\n'
+            settings.write_text(original_settings, encoding="utf-8")
+
+            env = os.environ.copy()
+            env["CLAUDE_CONFIG_DIR"] = str(claude)
+            env["CODEX_HOME"] = str(codex)
+            result = subprocess.run(
+                ["bash", str(INSTALL), "--local"],
+                cwd=root,
+                env=env,
+                text=True,
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(settings.read_text(encoding="utf-8"), original_settings)
+            self.assertFalse((root / "CLAUDE.md").exists())
+            self.assertFalse((root / "AGENTS.md").exists())
+
+            expected = {Path("SKILL.md")}
+            expected.update(Path("references") / path.name for path in (REPO / "references").glob("*.md"))
+            expected.update(Path("scripts") / path.name for path in (REPO / "scripts").glob("*.py"))
+            for target in (claude / "skills" / "research", codex / "skills" / "research"):
+                actual = {path.relative_to(target) for path in target.rglob("*") if path.is_file()}
+                self.assertEqual(actual, expected)
+                for rel in expected:
+                    self.assertEqual((target / rel).read_bytes(), (REPO / rel).read_bytes())
+
+
+if __name__ == "__main__":
+    unittest.main()

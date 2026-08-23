@@ -1,242 +1,111 @@
 # Phase: Init
 
-`/research init [<project-name>]`
+`/research init [<project-name>] [--full]`
 
-一条命令覆盖从"空目录冷启动"到"已有项目结构迁移/版本升级"的全部路径，幂等，可反复跑。
+先读取 [schema.md](schema.md)。默认创建最小结构；只有显式 `--full` 才预建可选模块。所有写入前展示计划并确认。
 
-共享流程 `[P2]`-`[P5]` 的定义见 SKILL.md `## 共享流程`。
+## 1. 判断场景
 
----
+- `docs/` 不存在：新建。
+- `docs/README.md` 的 `schema_version` 小于 4 或缺失：迁移。
+- `schema_version: 4`：只报告缺失的必需文档骨架和项目入口状态，不创建可选模块。
 
-**1. 判断场景**
+项目名优先使用参数，否则使用当前目录名。读取已有 `README.md`、`CLAUDE.md`、`AGENTS.md` 和顶层配置，已存在的用户内容不覆盖。
 
-- `docs/` 不存在 → **场景 A：新建**（完整冷启动）
-- `docs/` 存在，执行 `[P2: 旧结构探测]`：
-  - `LEGACY_DETECTED` → **场景 B：迁移**
-  - 否则，读取 `docs/README.md` 的 `schema_version`：
-    - 无字段或 < 当前版本 → **场景 B2：版本升级**
-    - = 当前版本 → **场景 C：已就绪**
+## 2. 新建计划
 
-当前 schema 版本：**3**
+最小模式创建：
 
-## 场景 A：新建（完整冷启动）
+- Git 仓库（仅当 `.git/` 不存在时执行 `git init -b main`）。
+- `docs/README.md`（`schema_version: 4`）、`docs/project/overview.md`。
+- `docs/handoffs/history/resolved/.gitkeep`、`docs/handoffs/history/superseded/.gitkeep`、`archive/docs/.gitkeep`。
+- 缺失时创建根 `README.md` 和 `.gitignore`。若 `CLAUDE.md`、`AGENTS.md` 两者都不存在，则冷启动创建两者；已有任意一个时只维护实际存在者，不补建另一个。
 
-**a. 项目信息**
+`--full` 额外创建 `paper-plan.md`、evaluation/methods/data 骨架、dashboard、journal、ARIS 与 scratch 入口。默认模式不创建这些空模块。
 
-- 项目名：`$ARGUMENTS` 第二个 token（如 `/research init my-paper`） > `basename $PWD`
-- 描述：不问，用 placeholder `"科研项目"`，用户进去自己改 README / CLAUDE.md
-- 读取 `CLAUDE.md`、`README.md`、顶层目录、配置文件（`pyproject.toml`、`setup.py`、`package.json`），用于按需创建子目录
+## 3. `.gitignore` 基线
 
-**b. git 初始化**
+新文件使用以下原则；现有 `.gitignore` 只追加明确缺失且不冲突的行，不机械复制整块：
 
-- 有 `.git/` → 跳过
-- 无 `.git/` → `git init -b main`
-
-**c. 根 `.gitignore`（幂等）**
-
-**原则**：默认本地化。gitignore 的逻辑是"哪些内容需要跟协作者共享"，而不是"哪些要排除"——默认全部本地，要共享的用 `!` 白名单单独豁免。
-
-不存在则创建，存在则逐行检查并追加缺失行。
-
-**基础块**（始终写入）：
-
-```
-# OS / editor
+```gitignore
+# OS / Python / secrets / logs
 .DS_Store
-
-# Python
 __pycache__/
 *.py[cod]
 .venv/
 .ipynb_checkpoints/
-
-# env / secrets
 .env
-
-# logs
 /logs/
 
-# local workspace (not shared by default)
-/docs/
-/archive/
+# large runtime data
+/data/
+/hf_staging/
 
-# scratch (dir ignored except its README)
+# scratch
 /scratch/*
 !/scratch/README.md
 
-# external / large / submodule-managed
-/paper/
-/data/
+# document archive is tracked; other archive classes stay local
+/archive/*
+!/archive/docs/
+!/archive/docs/**
 
-# *.json 默认不推（data 里实验结果等），按需白名单
-*.json
-!package.json
-!package-lock.json
-!pyproject.toml
-!tsconfig*.json
-
-# To share specific files from ignored dirs:
-# change  /foo/  →  /foo/*   then add  !/foo/path/to/file
+# LaTeX build outputs
+*.aux
+*.log
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+/paper/*.pdf
 ```
 
-**条件注入**（按探测结果追加）：
+不得默认忽略 `/docs/` 或整个 `/paper/`。`.tex`、`.bib`、`.sty`、`.cls` 和必要图片默认可跟踪；正式 PDF 由 retire 归档保存。
 
-- 探测到 `package.json` 或 `node_modules/` → 追加 Node 块：
+如果现有规则包含 `/docs/`、`/paper/` 或无法重新纳入 `archive/docs/**` 的 `/archive/`，列出规则、受影响的重要文件和精确修改计划，等待确认后再改。
 
-  ```
-  # Node
-  node_modules/
-  .next/
-  .turbo/
-  dist/
-  build/
-  npm-debug.log*
-  yarn-debug.log*
-  yarn-error.log*
-  ```
+## 4. 项目入口
 
-- 探测到 `*.tex` 文件（不依赖 `paper/` 目录名，因为 `paper/` 常是 submodule） → 追加 LaTeX 构建产物块：
+先扫描项目根的 `CLAUDE.md` 与 `AGENTS.md`：
 
-  ```
-  # LaTeX
-  *.aux
-  *.log
-  *.out
-  *.fls
-  *.fdb_latexmk
-  *.synctex.gz
-  *.bbl
-  *.blg
-  # *.pdf 已由 /paper/ 或用户自行处理；LaTeX 块不额外忽略 PDF
-  ```
+- 两者都不存在：这是冷启动，确认后分别创建最小骨架。
+- 只存在一个：只维护这个文件，不创建另一个。
+- 两者都存在：分别维护两者。
 
-- 探测到 `requirements.txt` / `pyproject.toml` 含 `torch|tensorflow|jax|transformers`，或已存在 `hf_staging/` / `analysis/` → 追加 ML 产物块：
+对实际存在或本次冷启动创建的入口，只维护 `## Documentation` 和 `## Last Handoff` 两个 section，规则见 schema。入口链接同一个文档索引和 active handoff，但不互相覆盖，也不复制对方的其他项目规则。
 
-  ```
-  # ML artifacts
-  /analysis/
-  /hf_staging/
-  ```
-
-  （注：`/data/` 和 `/logs/` 已在基础块）
-
-**d. 根 `README.md`**
-
-只在不存在时创建，已存在跳过。模板：
+两个最小骨架都包含：
 
 ```markdown
-# <project-name>
+## Documentation
 
-科研项目
+- [项目文档索引](docs/README.md)
 
-## 结构
+## Last Handoff
 
-- `docs/` — 项目文档（索引：`docs/README.md`）
-- `scratch/` — 一次性 HTML 便签（gitignored）
-- `archive/docs/` — 文档归档入口（由用户手动管理）
-
-## 文档
-
-见 `docs/README.md`。
+- 当前无 active handoff
 ```
 
-**e. 根 `CLAUDE.md`（最小骨架）**
+不得假设 Codex 会通过 `AGENTS.md` 自动读取 `CLAUDE.md`，也不得把 `AGENTS.md` 仅创建成 `@ CLAUDE.md` 指针。已有任一入口文件时，只更新实际存在者的上述两个受管 section，保留其余内容。
 
-只在不存在时创建最小骨架，已存在跳过（后面 P4 会处理 `## Documentation` 节注入）：
+## 5. v1-v3 → v4 迁移
 
-```markdown
-# <project-name>
+先输出 dry-run 计划，至少检查：
 
-科研项目
-```
+- `docs/handoffs/resolved/` → `docs/handoffs/history/resolved/`。
+- `docs/handoffs/history/*.md` 按 frontmatter 状态分别迁入 `history/resolved/` 或 `history/superseded/`；状态无法判断时只报告。
+- 仅包含 `@ CLAUDE.md` 指针、缺少受管 section 的旧 `AGENTS.md` → 独立的一等入口。
+- 根目录多个 active handoff：按 handoff 流程合并未完成事项，原文件以 `resolved` 或 `superseded` 状态进入 history。
+- `.gitignore` 是否错误忽略 docs、paper 源码或 archive/docs。
+- 旧 `docs/archive/`、编号目录、SCREAMING_CASE 文件与散落 HTML。
+- `docs/README.md` schema 版本和索引。
 
-**f. 根 `AGENTS.md`（Codex 入口，指向 CLAUDE.md）**
+用户确认后优先使用 `git mv` 保留历史；未跟踪文件使用普通移动。迁移中不得删除内容，无法判断的事项保留并标记 `待确认`。
 
-只在不存在时创建，已存在跳过。目的是让 Codex 运行时通过 AGENTS.md 读到与 CLAUDE.md 完全一致的内容，避免双份维护。
+已有可选目录和文档不因 v4 的按需策略而删除。完成后写 `schema_version: 4`，并仅在路径发生变化时同步索引和项目入口。
 
-```markdown
-@ CLAUDE.md
+## 6. 输出
 
-当你需要修改 AGENTS.md时，转而修改 CLAUDE.md
-```
-
-**g. 创建目录结构**
-
-始终创建（v3）：
-- `docs/project/`、`docs/handoffs/`、`docs/handoffs/resolved/`
-- `docs/dashboards/`、`docs/dashboards/render/`（v3：HTML 界面层）
-- 项目根 `archive/docs/deprecated/`、`archive/docs/scratch/`（v3：空骨架，带 `.gitkeep`）
-- 项目根 `scratch/`（v3：一次性 HTML 便签）
-
-按需创建（检测到对应代码时）：`docs/data/`、`docs/methods/`、`docs/evaluation/`
-
-**h. 生成文档骨架**
-
-每个文档使用 frontmatter（`updated`、`status: draft`、`scope`）：
-
-- `docs/README.md`：索引 + 阅读顺序 + archive 说明（archive 说明指向项目根 `archive/docs/`，并注明"归档由用户手动管理"）。frontmatter 含 `schema_version: 3`
-- `docs/project/overview.md`：纯 dashboard（状态、进度、链接，不放结论/叙事）
-- `docs/project/paper-plan.md`：论文规划骨架（定位、贡献 C1-Cn、叙事弧、章节结构、图表计划、时间线）
-- `docs/dashboards/README.md`：dashboard 索引 + 刷新命令说明
-- `scratch/README.md`：说明 scratch 的三条规则（一次性、不被引用、要留快照自己手动 `mv` 到 `archive/docs/scratch/YYYY-MM/`）
-- 其他按需创建的目录下放 `status: draft` 骨架文件
-
-**i. 执行 [P4: CLAUDE.md 同步]**（sync_type=`doc-section`）
-
-**j. 输出**
-
-- 列出新建 / 跳过的文件
-- 下一步建议：
-  1. `git add -A && git commit -m "chore: initial scaffold"` 做首个提交
-  2. 跑 `/research handoff` 记录项目起点
-  3. 按需往 `docs/{data,methods,evaluation}/` 塞初稿
-
-## 场景 B：迁移（遗留结构 / 版本升级）
-
-**a. 生成迁移计划**
-
-根据 `[P2]` 的发现，生成具体操作列表（仅限可自动迁移项）：
-- 目录重命名（`01-project/` → `project/`）
-- 文件重命名（`PROJECT_OVERVIEW.md` → `overview.md`）
-- handoff 目录合并（`handoff/` + `05-handoff/` → `handoffs/`）
-- 补建缺失的标准目录（含 v3 新增：`docs/dashboards/`、`archive/docs/`、`scratch/`）
-
-展示计划给用户，**等待确认**（使用 `AskUserQuestion`）。
-
-**b. 执行迁移**
-
-用户确认后：
-- 使用 `git mv` 执行重命名（保留 git 历史）
-- 补建缺失目录（含 v3 新增：`docs/dashboards/`、`archive/docs/`、`scratch/`）
-- 更新 `.gitignore`（参照场景 A.c）
-- 补建根 `AGENTS.md`（若不存在，参照场景 A.f）
-- 在 `docs/README.md` frontmatter 中写入 `schema_version: 3`
-
-**c. 执行 [P3: README 索引同步]**
-**d. 执行 [P4: CLAUDE.md 同步]**（sync_type=`doc-section`）
-
-## 场景 B2：版本升级
-
-轻量迁移（适用 v1/v2 → v3）：
-1. 补建 v3 新增的标准目录（幂等，已存在跳过）：
-   - `docs/dashboards/`、`docs/dashboards/render/`
-   - 项目根 `archive/docs/deprecated/`、`archive/docs/scratch/`（带 `.gitkeep`）
-   - 项目根 `scratch/` + `scratch/README.md`
-2. 更新项目根 `.gitignore`（参照场景 A.c）
-3. 写 `docs/dashboards/README.md` 骨架（若不存在）
-4. **补建根 `AGENTS.md`**（若不存在，参照场景 A.f）——Codex 兼容入口，内容指向 `CLAUDE.md`
-5. 在 `docs/README.md` frontmatter 中写入 `schema_version: 3`
-6. 执行 `[P3: README 索引同步]`
-7. **不自动迁移** `docs/archive/*`——在输出末尾报告：
-
-   ```
-   ⚠️ 检测到 docs/archive/ 仍存在（v2 语义）。v3 语义下文档归档在项目根 archive/docs/。
-      如需迁移，手动执行：
-        git mv docs/archive/deprecated/* archive/docs/deprecated/
-        git mv docs/archive/* archive/docs/    # 快照目录
-        rmdir docs/archive/
-   ```
-
-## 场景 C：已就绪
-
-输出：`docs/ 已是 schema v3，无需操作。运行 /research status 查看文档健康状态。`
+报告新建、修改、移动、跳过的路径，以及仍需用户决定的冲突。不要默认建议立即创建 handoff 或 journal；让用户继续实际研究工作即可。

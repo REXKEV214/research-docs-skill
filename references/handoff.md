@@ -1,61 +1,58 @@
 # Phase: Handoff
 
-每次跑 `/research handoff` 都执行固定流程：resolve 已完成的历史 handoff → 新建当前 handoff。不区分 session。
+`/research handoff` 只用于暂停一天以上、切换任务/代理、长实验仍在运行或上下文已经难以恢复的边界。普通短 session 不创建 handoff。
 
-共享流程 `[P2]`-`[P5]` 的定义见 SKILL.md `## 共享流程`。
+## 1. 目录与不变量
 
----
+标准目录：
 
-**1. 定位 handoff 目录**
+```text
+docs/handoffs/
+├── history/
+│   ├── resolved/
+│   └── superseded/
+└── YYYY-MM-DD-HHMM-slug.md   # 最多一个 status: active
+```
 
-按优先级探测：`docs/handoffs` > `docs/05-handoff` > `docs/handoff`。都不存在则创建 `docs/handoffs/` 和 `docs/handoffs/resolved/`。
+两个 history 子目录不存在时按需创建。检测到旧 `docs/handoffs/resolved/` 时报告 v3 残留；本次 handoff 可在确认后将其内容原样移动到 `history/resolved/`。检测到直接位于 `history/` 根目录的旧文件时，按其 frontmatter 状态分类；状态无法判断时停止并报告。
 
-使用非标准目录时，在输出末尾提示用户运行 `/research init` 迁移。
+## 2. 合并旧 active
 
-**2. 扫描活跃 handoff，resolve 已完成的**
+读取根目录全部 handoff，提取每个文件的“下一步”：
 
-读取 handoff 目录下所有 `*.md`（排除 `resolved/`）。对每个文件读"下一步"，对比本次 session 对话上下文判断 todo 是否全部完成：
+- 已有证据表明完成：不带入新 handoff，旧文件最终为 `resolved`。
+- 明确未完成：去重后带入新 handoff，旧文件最终为 `superseded`。
+- 无法判断：保留并标记 `待确认`，旧文件为 `superseded`。
 
-- 全部完成 → 更新 frontmatter `status: resolved`，整体 `mv` 到 `resolved/`
-- 有未完成项 → 不动
+不得因为创建新 handoff 而静默丢弃旧事项。存在多个 active 时，全部合并到一个新 handoff。
 
-**3. 执行 [P5: Session 素材收集]**
+## 3. 收集当前 session
 
-**4. 新建当前 handoff**
+以对话上下文为首要来源，记录具体文件、函数、命令、结果、决策和风险。项目文档只用于补充；不读取 Git log，不自动运行 status/update。
 
-文件路径：`$HANDOFF_DIR/YYYY-MM-DD-HHMM-{slug}.md`，slug 来自本 session 主题。
+## 4. 写入顺序
 
-**frontmatter 模板**：
+先生成并完整写入新的 draft 文件：
 
 ```yaml
 ---
 updated: YYYY-MM-DD
-status: active
+status: draft
 scope: session 交接
 ---
 ```
 
-**正文模板**：
+正文固定为：`已完成 / 当前状态 / 关键决策 / 下一步 / 注意事项`。“下一步”使用可执行祈使句。
 
-```markdown
-## 已完成
-<具体到文件和函数>
+Draft 成功后才处理旧 active：更新状态为 `resolved` 或 `superseded`，再使用 `git mv`（已跟踪）或 `mv`（未跟踪）分别移入 `history/resolved/` 或 `history/superseded/`。全部旧 active 处理成功后，最后把新文件状态切为 `active`。
 
-## 当前状态
-<项目整体状态快照>
+任一步失败都停止并报告 draft 路径，不把 draft 宣称为最新 handoff。这个顺序允许短暂出现零个 active，但不会留下两个 active；已有内容仍可从 draft 与 history 恢复。
 
-## 关键决策
-<本 session 做出的重要决策及理由>
+## 5. 入口同步
 
-## 下一步
-<祈使句：读 X → 运行 Y → 做 Z>
+先扫描项目根的 `CLAUDE.md` 与 `AGENTS.md`，只更新实际存在者；只有一个就只更新一个，两者都有才同时更新，均不存在则报告但不创建。每个被更新入口的 `## Last Handoff` 只保留：
 
-## 注意事项
-<陷阱、未解决的问题、临时方案>
-```
+- 最新 active handoff 链接。
+- 一句当前状态。
 
-**5. 执行 [P4: CLAUDE.md 同步]**（sync_type=`handoff`）
-
-**6. 输出**
-
-把 handoff 内容输出给用户确认。如有 resolved 的旧 handoff，一并报告。
+不复制全文，不列历史链，不覆盖入口文件的其他内容。最后验证所有实际存在的入口均指向同一个 active handoff、根目录恰好一个 active handoff，并报告迁入 history 的文件及状态。

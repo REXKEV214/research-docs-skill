@@ -2,6 +2,8 @@
 
 **目标**：扫描 ARIS skills 产出的英文文档，翻译为中文，归档到 `docs/aris/` 统一管理。
 
+`docs/aris/` 不存在时按需创建；默认 `init` 不预建。本流程需要同步索引时遵循 [schema.md](schema.md)，不读取其他 phase。
+
 **参数**：`/research aris [--dry-run] [--force]`
 
 - `--dry-run`：只输出将要处理的文件列表，不执行任何写入
@@ -153,7 +155,7 @@ translated: true
 **h. 更新索引**
 
 - 更新 `docs/aris/README.md`：列出所有子目录及其中的文件，以及完整版文件入口
-- 执行 `[P3: README 索引同步]`（定义见 SKILL.md 共享流程）确保 `docs/README.md` 包含 `aris/` 目录条目
+- 因新增了文件，按 [schema.md](schema.md) 的索引同步规则更新 `docs/README.md`
 
 **i. 输出**
 
