@@ -1,4 +1,4 @@
-# research-docs-skill
+# research-session-flow
 
 面向 Claude Code 与 Codex 的轻量科研项目管理 skill。它维护科研记忆、跨 session 交接和正式交付物，但不介入普通日常开发。
 
@@ -59,8 +59,8 @@ paper/
 ## 安装
 
 ```bash
-git clone https://github.com/REXKEV214/research-docs-skill
-cd research-docs-skill
+git clone https://github.com/whwangovo/research-session-flow.git
+cd research-session-flow
 ./install.sh
 ```
 
