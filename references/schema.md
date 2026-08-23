@@ -31,7 +31,6 @@
 | `docs/methods/` | 首次正式记录方法 | 方法设计与约束的唯一来源 |
 | `docs/journal/` | 首次 `/research log` | 可选的日期日志 |
 | `docs/dashboards/` | 首次 dashboard 操作 | 可重建的机器渲染界面 |
-| `docs/deliverables/` | 首次 freeze | 尚在使用期的不可变提交包 |
 | `docs/aris/` | 首次 ARIS 归档 | ARIS 产出的中文归档 |
 | `scratch/` | 首次创建一次性 HTML | gitignored 的临时界面 |
 
@@ -39,10 +38,8 @@
 
 ```text
 paper/（唯一活跃工作稿）
-  → freeze
-docs/deliverables/<slug>/（已提交、进入 Git）
   → retire
-archive/docs/YYYY-MM-DD-<slug>/（冷归档）
+archive/docs/paper/YYYY-MM-DD-<slug>/（不可变冷归档）
 ```
 
 Handoff 状态：

@@ -36,7 +36,7 @@ python3 <skill-dir>/scripts/research_audit.py --root "$PWD" --full
 - 显式 `status: stale` 的文档。
 - LaTeX 构建产物和多个顶层 PDF。
 - dashboard 是否成对、是否缺输出或生成器。
-- active deliverable 与 archive 快照数量。
+- `archive/docs/paper/` 下的论文归档数量与完整性。
 - 非标准历史目录和多个 active handoff。
 
-脚本输出事实；模型只补充解释和优先级。发现问题时给出建议命令，不自动运行 `init`、`update`、`freeze`、`retire` 或清理。
+脚本输出事实；模型只补充解释和优先级。发现问题时给出建议命令，不自动运行 `init`、`update`、`retire` 或清理。

@@ -21,7 +21,7 @@
 - `docs/handoffs/history/resolved/.gitkeep`、`docs/handoffs/history/superseded/.gitkeep`、`archive/docs/.gitkeep`。
 - 缺失时创建根 `README.md` 和 `.gitignore`。若 `CLAUDE.md`、`AGENTS.md` 两者都不存在，则冷启动创建两者；已有任意一个时只维护实际存在者，不补建另一个。
 
-`--full` 额外创建 `paper-plan.md`、evaluation/methods/data 骨架、dashboard、journal、deliverables、ARIS 与 scratch 入口。默认模式不创建这些空模块。
+`--full` 额外创建 `paper-plan.md`、evaluation/methods/data 骨架、dashboard、journal、ARIS 与 scratch 入口。默认模式不创建这些空模块。
 
 ## 3. `.gitignore` 基线
 
@@ -62,7 +62,7 @@ __pycache__/
 /paper/*.pdf
 ```
 
-不得默认忽略 `/docs/` 或整个 `/paper/`。`.tex`、`.bib`、`.sty`、`.cls` 和必要图片默认可跟踪；正式 PDF 由 deliverable 保存。
+不得默认忽略 `/docs/` 或整个 `/paper/`。`.tex`、`.bib`、`.sty`、`.cls` 和必要图片默认可跟踪；正式 PDF 由 retire 归档保存。
 
 如果现有规则包含 `/docs/`、`/paper/` 或无法重新纳入 `archive/docs/**` 的 `/archive/`，列出规则、受影响的重要文件和精确修改计划，等待确认后再改。
 

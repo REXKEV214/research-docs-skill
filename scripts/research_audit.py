@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Iterable
 
-from deliverable import DeliverableError, git_file_states, verify_checksums
+from retire import RetireError, git_file_states, verify_checksums
 
 
 IMPORTANT_SUFFIXES = {".md", ".tex", ".bib", ".sty", ".cls", ".bst"}
@@ -94,7 +94,7 @@ def audit_packages(root: Path, packages: list[Path], expected_status: str) -> li
         failures: list[str] = []
         try:
             failures.extend(verify_checksums(package))
-        except (DeliverableError, OSError, UnicodeDecodeError, ValueError) as exc:
+        except (RetireError, OSError, UnicodeDecodeError, ValueError) as exc:
             failures.append(str(exc))
         status = read_frontmatter(package / "README.md").get("status")
         if status != expected_status:
@@ -316,30 +316,19 @@ def audit(root: Path, full: bool) -> dict[str, object]:
                     "detail": ", ".join(dashboard_issues["missing_outputs"]),
                 }
             )
-        deliverables_dir = docs / "deliverables"
-        active_packages = (
-            sorted(path for path in deliverables_dir.iterdir() if path.is_dir())
-            if deliverables_dir.is_dir()
-            else []
-        )
-        archive_dir = root / "archive" / "docs"
+        archive_dir = root / "archive" / "docs" / "paper"
         archive_packages = (
-            sorted(
-                path
-                for path in archive_dir.iterdir()
-                if path.is_dir() and ((path / "SHA256SUMS").exists() or (path / "submitted.pdf").exists())
-            )
+            sorted(path for path in archive_dir.iterdir() if path.is_dir())
             if archive_dir.is_dir()
             else []
         )
-        active_package_audits = audit_packages(root, active_packages, "submitted")
         archive_package_audits = audit_packages(root, archive_packages, "archived")
-        for package_audit in [*active_package_audits, *archive_package_audits]:
+        for package_audit in archive_package_audits:
             if package_audit["failures"]:
                 issues.append(
                     {
                         "severity": "error",
-                        "code": "invalid-deliverable-package",
+                        "code": "invalid-paper-archive",
                         "detail": f"{package_audit['path']}: {'; '.join(package_audit['failures'])}",
                     }
                 )
@@ -352,7 +341,7 @@ def audit(root: Path, full: bool) -> dict[str, object]:
                 issues.append(
                     {
                         "severity": "warning",
-                        "code": "deliverable-not-tracked",
+                        "code": "paper-archive-not-tracked",
                         "detail": f"{package_audit['path']}: {', '.join(non_tracked)}",
                     }
                 )
@@ -362,12 +351,8 @@ def audit(root: Path, full: bool) -> dict[str, object]:
                 "latex_build_artifacts": relpaths(root, build_artifacts),
                 "paper_top_level_pdfs": relpaths(root, top_level_pdfs),
                 "dashboard_issues": dashboard_issues,
-                "active_deliverables": len(active_packages),
-                "deliverable_audits": active_package_audits,
-                "archived_deliverable_audits": archive_package_audits,
-                "archived_documents": len(list((root / "archive" / "docs").glob("*/README.md")))
-                if (root / "archive" / "docs").is_dir()
-                else 0,
+                "archived_paper_audits": archive_package_audits,
+                "archived_documents": len(archive_packages),
             }
         )
         if len(top_level_pdfs) > 1:
@@ -404,8 +389,7 @@ def print_human(report: dict[str, object], full: bool) -> None:
         print(f"stale docs: {len(report['stale_documents'])}")
         print(f"latex build artifacts: {len(report['latex_build_artifacts'])}")
         print(f"paper top-level PDFs: {len(report['paper_top_level_pdfs'])}")
-        print(f"active deliverables: {report['active_deliverables']}")
-        print(f"archived document packages: {report['archived_documents']}")
+        print(f"archived paper packages: {report['archived_documents']}")
     issues = report["issues"]
     if not issues:
         print("issues: none")

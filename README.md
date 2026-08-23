@@ -9,7 +9,7 @@
 - **按需创建**：默认 init 只建最小骨架，其他模块首次使用时创建。
 - **入口按存在同步**：只更新项目中实际存在的 `CLAUDE.md`、`AGENTS.md`；两者都有才同时更新。
 - **一个 active handoff**：旧交接进入 `docs/handoffs/history/`，未完成事项自动迁入最新交接。
-- **交付物可退役**：工作稿 → Git 中的最小提交包 → 冷归档。
+- **交付物可退役**：工作稿直接形成带校验的最小冷归档。
 
 ## 命令
 
@@ -20,11 +20,11 @@
 | `update [results\|methods\|project]` | 指定目标才修改；无参数只报告 |
 | `handoff` | 创建唯一 active handoff，并历史化旧 handoff |
 | `log [date] [--commit]` | 默认只写可选 journal；显式参数才提交 |
-| `deliverable status\|freeze\|retire` | 查看、冻结和退役正式交付物；可指定 source/PDF/主 TeX |
+| `retire <slug> [source-dir]` | 直接退役正式交付物；可指定 source/PDF/主 TeX |
 | `dashboard ...` | 管理可重建 HTML dashboard |
 | `aris ...` | 翻译归档 ARIS 产出 |
 
-推荐节奏：日常直接工作；权威内容变化时 `update`；暂停一天以上或切换任务时 `handoff`；里程碑时 `status --full`；正式提交时 `deliverable freeze`。
+推荐节奏：日常直接工作；权威内容变化时 `update`；暂停一天以上或切换任务时 `handoff`；里程碑时 `status --full`；正式提交完成且工作稿不再使用时 `retire`。
 
 ## schema v4
 
@@ -46,15 +46,14 @@ AGENTS.md
 
 冷启动且两个入口都不存在时创建两者；已有任意一个入口的项目只维护实际存在者，不补建另一个。
 
-论文交付物生命周期：
+论文交付物退役路径：
 
 ```text
 paper/
-  → docs/deliverables/<slug>/
-  → archive/docs/YYYY-MM-DD-<slug>/
+  → archive/docs/paper/YYYY-MM-DD-<slug>/
 ```
 
-冻结包只保留 `submitted.pdf`、最小可编译源码、说明和 SHA-256 校验；中间 PDF、编译缓存和 review 状态不进入。
+归档包只保留 `submitted.pdf`、最小可编译源码、说明和 SHA-256 校验；中间 PDF、编译缓存和 review 状态不进入。
 
 ## 安装
 
