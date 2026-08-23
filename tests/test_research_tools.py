@@ -41,10 +41,65 @@ class ResearchAuditTests(unittest.TestCase):
             report = json.loads(result.stdout)
             issue = next(item for item in report["issues"] if item["code"] == "required-entry-missing")
             self.assertIn("docs/project/overview.md", issue["detail"])
-            self.assertIn("docs/handoffs/history", issue["detail"])
+            self.assertIn("docs/handoffs/history/resolved", issue["detail"])
+            self.assertIn("docs/handoffs/history/superseded", issue["detail"])
             self.assertIn("archive/docs", issue["detail"])
-            self.assertIn("CLAUDE.md", issue["detail"])
-            self.assertIn("AGENTS.md", issue["detail"])
+            self.assertNotIn("CLAUDE.md", issue["detail"])
+            self.assertNotIn("AGENTS.md", issue["detail"])
+            entry_issue = next(item for item in report["issues"] if item["code"] == "project-entry-missing")
+            self.assertIn("CLAUDE.md", entry_issue["detail"])
+            self.assertIn("AGENTS.md", entry_issue["detail"])
+
+    def test_any_existing_project_entry_combination_is_valid(self) -> None:
+        for entry_names in (("AGENTS.md",), ("CLAUDE.md",), ("CLAUDE.md", "AGENTS.md")):
+            with self.subTest(entry_names=entry_names), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                (root / "docs" / "project").mkdir(parents=True)
+                (root / "docs" / "handoffs" / "history" / "resolved").mkdir(parents=True)
+                (root / "docs" / "handoffs" / "history" / "superseded").mkdir()
+                (root / "archive" / "docs").mkdir(parents=True)
+                (root / "docs" / "README.md").write_text(
+                    "---\nschema_version: 4\nstatus: active\n---\n", encoding="utf-8"
+                )
+                (root / "docs" / "project" / "overview.md").write_text(
+                    "overview\n", encoding="utf-8"
+                )
+                for entry_name in entry_names:
+                    (root / entry_name).write_text("# Project instructions\n", encoding="utf-8")
+
+                result = run_script(AUDIT, "--root", str(root), "--json", cwd=root)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                report = json.loads(result.stdout)
+                self.assertEqual(report["project_entries"], sorted(entry_names))
+                codes = {issue["code"] for issue in report["issues"]}
+                self.assertNotIn("project-entry-missing", codes)
+                self.assertNotIn("required-entry-missing", codes)
+
+    def test_history_subdirectories_are_counted_and_status_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            resolved = root / "docs" / "handoffs" / "history" / "resolved"
+            superseded = root / "docs" / "handoffs" / "history" / "superseded"
+            resolved.mkdir(parents=True)
+            superseded.mkdir()
+            (resolved / "done.md").write_text("---\nstatus: resolved\n---\n", encoding="utf-8")
+            (superseded / "carried.md").write_text(
+                "---\nstatus: superseded\n---\n", encoding="utf-8"
+            )
+            (resolved / "wrong.md").write_text("---\nstatus: active\n---\n", encoding="utf-8")
+            (resolved.parent / "unclassified.md").write_text(
+                "---\nstatus: resolved\n---\n", encoding="utf-8"
+            )
+
+            result = run_script(AUDIT, "--root", str(root), "--json", cwd=root)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["history_handoffs"], 4)
+            self.assertEqual(report["resolved_handoffs"], 2)
+            self.assertEqual(report["superseded_handoffs"], 1)
+            codes = {issue["code"] for issue in report["issues"]}
+            self.assertIn("handoff-history-unclassified", codes)
+            self.assertIn("handoff-history-status-mismatch", codes)
 
     def test_reports_schema_handoff_and_ignored_source(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

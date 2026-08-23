@@ -13,8 +13,10 @@ python3 <skill-dir>/scripts/research_audit.py --root "$PWD"
 报告：
 
 - `docs/` 与 schema 版本。
+- 项目根实际存在的 `CLAUDE.md` / `AGENTS.md`；至少存在一个即为合法入口状态。
 - `docs/handoffs/` 根目录的 active 数量与最新文件。
-- `resolved/` 等 v3 残留。
+- `history/resolved/` 与 `history/superseded/` 数量、目录和 frontmatter 状态是否一致。
+- 旧 `resolved/` 或直接放在 `history/` 根下的未分类 handoff。
 - `AGENTS.md` 是否仍是仅指向 `CLAUDE.md` 的旧占位入口。
 - 被 Git ignore 的 `.md`、`.tex`、`.bib`、`.sty`、`.cls` 源码。
 - 实际存在的权威文档入口。

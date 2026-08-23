@@ -9,10 +9,12 @@
 ```text
 docs/handoffs/
 ├── history/
+│   ├── resolved/
+│   └── superseded/
 └── YYYY-MM-DD-HHMM-slug.md   # 最多一个 status: active
 ```
 
-`history/` 不存在时按需创建。检测到 `resolved/` 时报告 v3 残留；本次 handoff 可在确认后将其内容原样移动到 `history/`。
+两个 history 子目录不存在时按需创建。检测到旧 `docs/handoffs/resolved/` 时报告 v3 残留；本次 handoff 可在确认后将其内容原样移动到 `history/resolved/`。检测到直接位于 `history/` 根目录的旧文件时，按其 frontmatter 状态分类；状态无法判断时停止并报告。
 
 ## 2. 合并旧 active
 
@@ -42,15 +44,15 @@ scope: session 交接
 
 正文固定为：`已完成 / 当前状态 / 关键决策 / 下一步 / 注意事项`。“下一步”使用可执行祈使句。
 
-Draft 成功后才处理旧 active：更新状态为 `resolved` 或 `superseded`，再使用 `git mv`（已跟踪）或 `mv`（未跟踪）移入 `history/`。全部旧 active 处理成功后，最后把新文件状态切为 `active`。
+Draft 成功后才处理旧 active：更新状态为 `resolved` 或 `superseded`，再使用 `git mv`（已跟踪）或 `mv`（未跟踪）分别移入 `history/resolved/` 或 `history/superseded/`。全部旧 active 处理成功后，最后把新文件状态切为 `active`。
 
 任一步失败都停止并报告 draft 路径，不把 draft 宣称为最新 handoff。这个顺序允许短暂出现零个 active，但不会留下两个 active；已有内容仍可从 draft 与 history 恢复。
 
 ## 5. 入口同步
 
-`CLAUDE.md` 与 `AGENTS.md` 的 `## Last Handoff` 分别只保留：
+先扫描项目根的 `CLAUDE.md` 与 `AGENTS.md`，只更新实际存在者；只有一个就只更新一个，两者都有才同时更新，均不存在则报告但不创建。每个被更新入口的 `## Last Handoff` 只保留：
 
 - 最新 active handoff 链接。
 - 一句当前状态。
 
-不复制全文，不列历史链，不覆盖任一入口文件的其他内容。最后验证两个入口均指向同一个 active handoff、根目录恰好一个 active handoff，并报告迁入 history 的文件及状态。
+不复制全文，不列历史链，不覆盖入口文件的其他内容。最后验证所有实际存在的入口均指向同一个 active handoff、根目录恰好一个 active handoff，并报告迁入 history 的文件及状态。

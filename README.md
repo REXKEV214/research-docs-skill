@@ -7,7 +7,7 @@
 - **事件驱动**：只在权威信息变化、上下文切换、阶段检查或正式交付时调用。
 - **单一来源**：实验数字 → `results.md`，方法 → `methods/`，论文叙事 → `paper-plan.md`。
 - **按需创建**：默认 init 只建最小骨架，其他模块首次使用时创建。
-- **双入口同步**：`CLAUDE.md` 与 `AGENTS.md` 都是一等入口，分别维护同一组文档与 handoff 短链接。
+- **入口按存在同步**：只更新项目中实际存在的 `CLAUDE.md`、`AGENTS.md`；两者都有才同时更新。
 - **一个 active handoff**：旧交接进入 `docs/handoffs/history/`，未完成事项自动迁入最新交接。
 - **交付物可退役**：工作稿 → Git 中的最小提交包 → 冷归档。
 
@@ -37,10 +37,14 @@ docs/
 │   └── overview.md
 └── handoffs/
     └── history/
+        ├── resolved/
+        └── superseded/
 archive/docs/
 CLAUDE.md
 AGENTS.md
 ```
+
+冷启动且两个入口都不存在时创建两者；已有任意一个入口的项目只维护实际存在者，不补建另一个。
 
 论文交付物生命周期：
 

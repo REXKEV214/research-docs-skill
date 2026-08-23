@@ -116,6 +116,9 @@ def audit(root: Path, full: bool) -> dict[str, object]:
     root = root.resolve()
     docs = root / "docs"
     handoffs = docs / "handoffs"
+    history = handoffs / "history"
+    resolved_history = history / "resolved"
+    superseded_history = history / "superseded"
     issues: list[dict[str, str]] = []
 
     readme_meta = read_frontmatter(docs / "README.md") if docs.is_dir() else {}
@@ -139,10 +142,9 @@ def audit(root: Path, full: bool) -> dict[str, object]:
     required_entries = (
         (docs / "README.md", "file"),
         (docs / "project" / "overview.md", "file"),
-        (handoffs / "history", "directory"),
+        (resolved_history, "directory"),
+        (superseded_history, "directory"),
         (root / "archive" / "docs", "directory"),
-        (root / "CLAUDE.md", "file"),
-        (root / "AGENTS.md", "file"),
     )
     missing_entries = [
         str(path.relative_to(root))
@@ -155,6 +157,18 @@ def audit(root: Path, full: bool) -> dict[str, object]:
                 "severity": "warning",
                 "code": "required-entry-missing",
                 "detail": ", ".join(missing_entries),
+            }
+        )
+
+    project_entries = [
+        path for path in (root / "CLAUDE.md", root / "AGENTS.md") if path.is_file()
+    ]
+    if not project_entries:
+        issues.append(
+            {
+                "severity": "warning",
+                "code": "project-entry-missing",
+                "detail": "项目根没有 CLAUDE.md 或 AGENTS.md；普通流程不会自动创建",
             }
         )
 
@@ -197,7 +211,38 @@ def audit(root: Path, full: bool) -> dict[str, object]:
             {
                 "severity": "warning",
                 "code": "legacy-resolved-directory",
-                "detail": "docs/handoffs/resolved/ 应迁移为 history/",
+                "detail": "docs/handoffs/resolved/ 应迁移为 history/resolved/",
+            }
+        )
+
+    unclassified_history = list(history.glob("*.md")) if history.is_dir() else []
+    if unclassified_history:
+        issues.append(
+            {
+                "severity": "warning",
+                "code": "handoff-history-unclassified",
+                "detail": ", ".join(relpaths(root, unclassified_history)),
+            }
+        )
+    resolved_files = list(resolved_history.glob("*.md")) if resolved_history.is_dir() else []
+    superseded_files = (
+        list(superseded_history.glob("*.md")) if superseded_history.is_dir() else []
+    )
+    status_mismatches = [
+        path
+        for path in resolved_files
+        if read_frontmatter(path).get("status") != "resolved"
+    ] + [
+        path
+        for path in superseded_files
+        if read_frontmatter(path).get("status") != "superseded"
+    ]
+    if status_mismatches:
+        issues.append(
+            {
+                "severity": "warning",
+                "code": "handoff-history-status-mismatch",
+                "detail": ", ".join(relpaths(root, status_mismatches)),
             }
         )
 
@@ -214,10 +259,11 @@ def audit(root: Path, full: bool) -> dict[str, object]:
     report: dict[str, object] = {
         "root": str(root),
         "schema_version": schema_version,
+        "project_entries": relpaths(root, project_entries),
         "active_handoffs": relpaths(root, active_files),
-        "history_handoffs": len(list((handoffs / "history").glob("*.md")))
-        if (handoffs / "history").is_dir()
-        else 0,
+        "history_handoffs": len(resolved_files) + len(superseded_files) + len(unclassified_history),
+        "resolved_handoffs": len(resolved_files),
+        "superseded_handoffs": len(superseded_files),
         "ignored_important_files": ignored,
         "authoritative_documents": [
             str(path.relative_to(root))
@@ -233,7 +279,6 @@ def audit(root: Path, full: bool) -> dict[str, object]:
 
     if full:
         markdown_files = list(docs.rglob("*.md")) if docs.is_dir() else []
-        history = handoffs / "history"
         stale = [
             path
             for path in markdown_files
@@ -348,9 +393,12 @@ def audit(root: Path, full: bool) -> dict[str, object]:
 def print_human(report: dict[str, object], full: bool) -> None:
     print(f"research status: {report['root']}")
     print(f"schema: {report['schema_version'] or 'missing'}")
+    print(f"project entries: {', '.join(report['project_entries']) or 'none'}")
     active = report["active_handoffs"]
     print(f"active handoff: {active[0] if len(active) == 1 else len(active)}")
     print(f"history handoffs: {report['history_handoffs']}")
+    print(f"resolved handoffs: {report['resolved_handoffs']}")
+    print(f"superseded handoffs: {report['superseded_handoffs']}")
     print(f"authoritative docs: {len(report['authoritative_documents'])}")
     if full:
         print(f"stale docs: {len(report['stale_documents'])}")
