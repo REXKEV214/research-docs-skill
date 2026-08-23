@@ -46,6 +46,22 @@ def relpaths(root: Path, paths: Iterable[Path]) -> list[str]:
     return sorted(str(path.relative_to(root)) for path in paths)
 
 
+def is_legacy_agents_pointer(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return bool(
+        lines
+        and lines[0] == "@ CLAUDE.md"
+        and "## Documentation" not in lines
+        and "## Last Handoff" not in lines
+    )
+
+
 def ignored_important_files(root: Path) -> list[str]:
     candidates: list[Path] = []
     for dirname in ("docs", "paper"):
@@ -139,6 +155,15 @@ def audit(root: Path, full: bool) -> dict[str, object]:
                 "severity": "warning",
                 "code": "required-entry-missing",
                 "detail": ", ".join(missing_entries),
+            }
+        )
+
+    if is_legacy_agents_pointer(root / "AGENTS.md"):
+        issues.append(
+            {
+                "severity": "warning",
+                "code": "legacy-agents-pointer",
+                "detail": "AGENTS.md 仍是 @ CLAUDE.md 占位入口，应由 init 迁移为独立受管入口",
             }
         )
 

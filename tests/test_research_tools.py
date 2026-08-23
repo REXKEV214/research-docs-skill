@@ -126,6 +126,7 @@ class ResearchAuditTests(unittest.TestCase):
             codes = {issue["code"] for issue in report["issues"]}
             self.assertIn("invalid-deliverable-package", codes)
             self.assertIn("deliverable-not-tracked", codes)
+            self.assertIn("legacy-agents-pointer", codes)
             self.assertEqual(report["active_deliverables"], 1)
 
 

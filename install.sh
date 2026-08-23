@@ -158,7 +158,7 @@ fi
 # ── 3. 完成提示 ─────────────────────────────────────────────
 
 echo ""
-echo "✓ 安装完成。重启 Claude Code 后生效。"
+echo "✓ 安装完成。重启 Claude Code / Codex 后生效。"
 echo ""
 echo "使用方式："
 echo "  /research init [<name>]        初始化（冷启动 / 迁移 / 升级，幂等）"

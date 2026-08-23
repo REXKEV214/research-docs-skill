@@ -97,9 +97,9 @@ out-of-scope: 本文档不覆盖什么
 
 ## 项目入口同步
 
-`CLAUDE.md` 的 research 管理区只保留短入口：
+`CLAUDE.md` 与 `AGENTS.md` 都是一等项目入口。两者的 research 管理区分别只保留短入口：
 
 - `## Documentation`：链接到 `docs/README.md` 与实际存在的权威文件。
 - `## Last Handoff`：最新 active handoff 的链接和一句状态摘要；不复制 handoff 全文，不列历史 handoff。
 
-只修改目标 section，不覆盖用户的其他内容。`AGENTS.md` 已存在时不修改；不存在时由 `init` 创建最小指针。
+对两个文件分别只修改目标 section，不覆盖用户的其他内容。不得假设 `AGENTS.md` 会自动读取 `CLAUDE.md`，也不得用一个入口代替另一个；不存在的入口文件只由 `init` 创建。

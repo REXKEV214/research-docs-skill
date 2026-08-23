@@ -13,6 +13,7 @@ allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob, Agent
 - **事件驱动**：正常编码和实验不调用本 skill；只在权威信息变化、上下文切换、阶段检查或正式交付时调用。
 - **单一来源**：实验数字 → `docs/evaluation/results.md`；方法 → `docs/methods/`；论文叙事 → `docs/project/paper-plan.md`。
 - **按需创建**：`init` 默认只建最小骨架；journal、dashboard、deliverable、ARIS 等模块首次使用时再创建。
+- **双入口同步**：`CLAUDE.md` 与 `AGENTS.md` 都是一等入口；分别维护相同的文档与 active handoff 短链接，同时保留各自其他内容。
 - **一个 active handoff**：`docs/handoffs/` 根目录最多一个 active 文件；历史统一进入 `docs/handoffs/history/`。
 - **危险操作先 dry-run**：迁移、冻结、退役、提交和清理必须先展示精确计划；未经确认不覆盖、不删除。
 - **安装与项目初始化分离**：`install.sh` 只安装全局 skill；只有 `/research init` 可以创建项目级 `CLAUDE.md`、`AGENTS.md` 和 `docs/`。

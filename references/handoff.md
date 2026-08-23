@@ -48,9 +48,9 @@ Draft 成功后才处理旧 active：更新状态为 `resolved` 或 `superseded`
 
 ## 5. 入口同步
 
-`CLAUDE.md` 的 `## Last Handoff` 只保留：
+`CLAUDE.md` 与 `AGENTS.md` 的 `## Last Handoff` 分别只保留：
 
 - 最新 active handoff 链接。
 - 一句当前状态。
 
-不复制全文，不列历史链。最后验证根目录恰好一个 active handoff，并报告迁入 history 的文件及状态。
+不复制全文，不列历史链，不覆盖任一入口文件的其他内容。最后验证两个入口均指向同一个 active handoff、根目录恰好一个 active handoff，并报告迁入 history 的文件及状态。

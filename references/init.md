@@ -68,23 +68,28 @@ __pycache__/
 
 ## 4. 项目入口
 
-`CLAUDE.md` 不存在时创建最小骨架；存在时只维护 `## Documentation` 和 `## Last Handoff` 两个 section，规则见 schema。
+`CLAUDE.md` 与 `AGENTS.md` 不存在时分别创建最小骨架；存在时分别只维护 `## Documentation` 和 `## Last Handoff` 两个 section，规则见 schema。两者都链接同一个文档索引和 active handoff，但不互相覆盖，也不复制对方的其他项目规则。
 
-`AGENTS.md` 不存在时创建：
+两个最小骨架都包含：
 
 ```markdown
-@ CLAUDE.md
+## Documentation
 
-当你需要修改 AGENTS.md 时，转而修改 CLAUDE.md。
+- [项目文档索引](docs/README.md)
+
+## Last Handoff
+
+- 当前无 active handoff
 ```
 
-已存在的 `AGENTS.md` 不修改。
+不得假设 Codex 会通过 `AGENTS.md` 自动读取 `CLAUDE.md`，也不得把 `AGENTS.md` 仅创建成 `@ CLAUDE.md` 指针。已有任一入口文件时，只更新上述两个受管 section，保留其余内容。
 
 ## 5. v1-v3 → v4 迁移
 
 先输出 dry-run 计划，至少检查：
 
 - `docs/handoffs/resolved/` → `docs/handoffs/history/`。
+- 仅包含 `@ CLAUDE.md` 指针、缺少受管 section 的旧 `AGENTS.md` → 独立的一等入口。
 - 根目录多个 active handoff：按 handoff 流程合并未完成事项，原文件以 `resolved` 或 `superseded` 状态进入 history。
 - `.gitignore` 是否错误忽略 docs、paper 源码或 archive/docs。
 - 旧 `docs/archive/`、编号目录、SCREAMING_CASE 文件与散落 HTML。

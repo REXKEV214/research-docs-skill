@@ -23,6 +23,6 @@
 3. 其他文档中的重复实验数字替换为指向 `results.md` 的链接。
 4. 仅在正文实际变化时更新 frontmatter 日期。
 5. 只有新增、删除或移动文件时才同步 `docs/README.md` 索引。
-6. `CLAUDE.md` 只更新对应短入口，不复制结论全文。
+6. `CLAUDE.md` 与 `AGENTS.md` 分别只更新对应短入口，不复制结论全文，也不覆盖各自的其他内容。
 
 完全过时的文件只列为归档候选；未经确认不移动到 `archive/docs/deprecated/`。
