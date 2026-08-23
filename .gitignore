@@ -1,6 +1,10 @@
 # OS / editor
 .DS_Store
 
+# Python test/runtime cache
+__pycache__/
+*.py[cod]
+
 # OMC workspace
 .omc/
 

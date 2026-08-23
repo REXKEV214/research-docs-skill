@@ -1,38 +1,39 @@
 # Phase: Status
 
-**默认子命令**（无参数时执行）。
+`/research status [--full]`，无子命令时默认执行。整个流程只读。
 
-共享流程 `[P2]`-`[P5]` 的定义见 SKILL.md `## 共享流程`。
+## 快速状态（默认）
 
----
+从项目根运行 skill 自带脚本：
 
-**1. 检查 docs/ 是否存在**
+```bash
+python3 <skill-dir>/scripts/research_audit.py --root "$PWD"
+```
 
-- 不存在 → 输出提示：`docs/ 目录不存在，运行 /research init 初始化（冷启动或已有项目迁移）`，结束
-- 存在 → 继续
+报告：
 
-**2. 读取 schema 版本**
+- `docs/` 与 schema 版本。
+- `docs/handoffs/` 根目录的 active 数量与最新文件。
+- `resolved/` 等 v3 残留。
+- 被 Git ignore 的 `.md`、`.tex`、`.bib`、`.sty`、`.cls` 源码。
+- 实际存在的权威文档入口。
 
-读取 `docs/README.md` frontmatter 的 `schema_version` 字段：
-- 无字段 → 显示 `⚠️ schema_version 缺失（v1 或更早），建议运行 /research init 升级`
-- 有字段 → 显示 `schema v{n}`
+默认扫描不读取所有文档正文，不按更新时间制造维护任务。
 
-**3. 执行 [P2: 旧结构探测]**
+## 完整状态
 
-如果 `LEGACY_DETECTED`，在报告中列出发现的遗留模式，建议运行 `/research init` 迁移（迁移范围仅限 v1→v2/v3 的自动可迁项；archive 类遗留仍需手动处理）。
+`--full` 时运行：
 
-**4. 文档健康扫描**
+```bash
+python3 <skill-dir>/scripts/research_audit.py --root "$PWD" --full
+```
 
-扫描 `docs/` 下所有活跃 `.md` 文件（排除 `archive/` 和 `handoffs/resolved/`），输出表格：
+额外报告：
 
-| 文件 | updated | 天数 | 状态 |
-|------|---------|------|------|
-| project/overview.md | 2026-04-01 | 20 | ✅ |
-| methods/design.md | 2026-03-01 | 51 | ⚠️ 过期 |
+- 显式 `status: stale` 的文档。
+- LaTeX 构建产物和多个顶层 PDF。
+- dashboard 是否成对、是否缺输出或生成器。
+- active deliverable 与 archive 快照数量。
+- 非标准历史目录和多个 active handoff。
 
-过期阈值：`updated` 距今 >30 天。
-
-**5. 摘要**
-
-输出：活跃文档数、过期文档数、活跃 handoff 数、已归档 handoff 数。
-如有过期文档，建议运行 `/research update`。
+脚本输出事实；模型只补充解释和优先级。发现问题时给出建议命令，不自动运行 `init`、`update`、`freeze`、`retire` 或清理。
