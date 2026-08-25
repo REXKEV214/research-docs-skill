@@ -81,6 +81,8 @@ stages=("" "")
 backups=("" "")
 install_actions=(0 0)
 installed=(0 0)
+had_original=(0 0)
+swap_started=(0 0)
 INSTALL_TRANSACTION_COMPLETE=0
 
 rollback_install_transaction() {
@@ -89,11 +91,15 @@ rollback_install_transaction() {
   fi
   local index
   for (( index=1; index>=0; index-- )); do
-    if [[ "${installed[$index]}" -eq 1 && -d "${targets[$index]}" ]]; then
-      rm -rf -- "${targets[$index]}"
-    fi
-    if [[ -n "${backups[$index]}" && -d "${backups[$index]}" ]]; then
-      mv "${backups[$index]}" "${targets[$index]}"
+    if [[ "${swap_started[$index]}" -eq 1 ]]; then
+      if [[ -n "${backups[$index]}" && -d "${backups[$index]}" ]]; then
+        if [[ -e "${targets[$index]}" ]]; then
+          rm -rf -- "${targets[$index]}"
+        fi
+        mv "${backups[$index]}" "${targets[$index]}"
+      elif [[ "${had_original[$index]}" -eq 0 && -e "${targets[$index]}" ]]; then
+        rm -rf -- "${targets[$index]}"
+      fi
     fi
     if [[ -n "${stages[$index]}" && -d "${stages[$index]}" ]]; then
       rm -rf -- "${stages[$index]}"
@@ -122,7 +128,9 @@ for index in 0 1; do
     exit 1
   fi
 
-  stage=$(mktemp -d "${TMPDIR:-/tmp}/research-skill-install.XXXXXX")
+  target_parent=$(dirname "$target")
+  mkdir -p "$target_parent"
+  stage=$(mktemp -d "$target_parent/.research-skill-install.XXXXXX")
   mkdir -p "$stage/references" "$stage/scripts"
   cp -f "$SCRIPT_DIR/SKILL.md" "$stage/SKILL.md"
   cp -f "$SCRIPT_DIR"/references/*.md "$stage/references/"
@@ -131,6 +139,9 @@ for index in 0 1; do
   stages[$index]="$stage"
   backups[$index]="$backup"
   install_actions[$index]=1
+  if [[ -d "$target" ]]; then
+    had_original[$index]=1
+  fi
 done
 
 for index in 0 1; do
@@ -141,6 +152,7 @@ for index in 0 1; do
   stage="${stages[$index]}"
   backup="${backups[$index]}"
   mkdir -p "$(dirname "$target")"
+  swap_started[$index]=1
   if [[ -d "$target" ]]; then
     mv "$target" "$backup"
   else

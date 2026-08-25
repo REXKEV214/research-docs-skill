@@ -101,14 +101,23 @@ def validate_readme_body(path: Path) -> str:
         raise RetireError("README 正文必须以一级标题开头")
     lines = body.splitlines()
     headings: list[tuple[str, int]] = []
-    fence: str | None = None
+    fence: tuple[str, int] | None = None
     for index, line in enumerate(lines):
-        stripped = line.lstrip()
-        marker = stripped[:3]
-        if marker in {"```", "~~~"}:
-            if fence is None:
-                fence = marker
-            elif fence == marker:
+        if fence is None:
+            opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            if opening is not None:
+                marker = opening.group(1)
+                info = opening.group(2)
+                if marker[0] == "~" or "`" not in info:
+                    fence = (marker[0], len(marker))
+                    continue
+        else:
+            closing = re.match(r"^ {0,3}(`+|~+)[ \t]*$", line)
+            if (
+                closing is not None
+                and closing.group(1)[0] == fence[0]
+                and len(closing.group(1)) >= fence[1]
+            ):
                 fence = None
             continue
         if fence is None and line.startswith("## ") and not line.startswith("### "):
@@ -316,19 +325,84 @@ def size_summary(paths: list[Path]) -> tuple[int, list[Path]]:
     return sum(path.stat().st_size for path in paths), too_large
 
 
-def copy_regular_file(source: Path, target: Path) -> None:
-    """Copy one bounded regular file without following a late symlink swap."""
+def directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def open_directory_no_symlinks(path: Path) -> int:
+    """Open an absolute directory path without following any component symlink."""
+    if not path.is_absolute():
+        raise RetireError(f"安全目录路径必须是绝对路径: {path}")
+    current_fd = os.open(os.sep, directory_open_flags())
+    try:
+        for component in path.parts[1:]:
+            next_fd = os.open(component, directory_open_flags(), dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except OSError as exc:
+        os.close(current_fd)
+        raise RetireError(f"目录路径包含符号链接或无法安全打开: {path}") from exc
+
+
+def open_project_directory(root: Path, relative: Path, create: bool) -> int:
+    """Open a project directory relative to a stable root descriptor."""
+    if relative.is_absolute() or ".." in relative.parts:
+        raise RetireError(f"项目目录必须位于根目录内: {relative}")
+    current_fd = open_directory_no_symlinks(root)
+    try:
+        for component in relative.parts:
+            try:
+                next_fd = os.open(component, directory_open_flags(), dir_fd=current_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(component, 0o755, dir_fd=current_fd)
+                next_fd = os.open(component, directory_open_flags(), dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except OSError as exc:
+        os.close(current_fd)
+        raise RetireError(f"项目目录包含符号链接或无法安全创建: {relative}") from exc
+
+
+def open_regular_file_no_symlinks(path: Path) -> int:
+    """Open a regular file without following symlinks and without blocking on FIFOs."""
+    if not path.is_absolute() or not path.name:
+        raise RetireError(f"安全输入路径必须是绝对文件路径: {path}")
+    current_fd = os.open(os.sep, directory_open_flags())
+    try:
+        for component in path.parts[1:-1]:
+            next_fd = os.open(component, directory_open_flags(), dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        source_fd = os.open(path.name, flags, dir_fd=current_fd)
+    except OSError as exc:
+        raise RetireError(f"归档输入包含符号链接或无法安全读取: {path}") from exc
+    finally:
+        os.close(current_fd)
+    return source_fd
+
+
+def copy_regular_file(
+    source: Path, target: Path, expected_sha256: str | None = None
+) -> None:
+    """Copy one planned, bounded regular file from a stable descriptor."""
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        if stat.S_ISLNK(source.lstat().st_mode):
-            raise RetireError(f"归档输入在计划后变为符号链接: {source}")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        source_fd = os.open(source, flags)
-    except RetireError:
-        raise
-    except OSError as exc:
-        raise RetireError(f"无法安全读取归档输入: {source}") from exc
-    try:
+        source_fd = open_regular_file_no_symlinks(source)
         with os.fdopen(source_fd, "rb") as source_handle:
             source_stat = os.fstat(source_handle.fileno())
             if not stat.S_ISREG(source_stat.st_mode):
@@ -336,45 +410,54 @@ def copy_regular_file(source: Path, target: Path) -> None:
             if source_stat.st_size >= MAX_FILE_BYTES:
                 raise RetireError(f"单文件达到 100 MiB: {source}")
             copied = 0
+            digest = hashlib.sha256()
             with target.open("xb") as target_handle:
                 for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
                     copied += len(chunk)
                     if copied >= MAX_FILE_BYTES:
                         raise RetireError(f"单文件达到 100 MiB: {source}")
+                    digest.update(chunk)
                     target_handle.write(chunk)
                 os.fchmod(target_handle.fileno(), stat.S_IMODE(source_stat.st_mode))
+            if expected_sha256 is not None and digest.hexdigest() != expected_sha256:
+                raise RetireError(f"归档输入在计划后发生变化: {source}")
     except Exception:
         if target.exists():
             target.unlink()
         raise
 
 
-def validate_staged_pdf(path: Path, report: dict[str, object] | None) -> None:
+def validate_staged_pdf(path: Path, expected_sha256: str) -> None:
     with path.open("rb") as handle:
         if handle.read(5) != b"%PDF-":
             raise RetireError("归档后的 submitted.pdf 没有 PDF 标头")
     if path.stat().st_size >= MAX_FILE_BYTES:
         raise RetireError("归档后的 submitted.pdf 达到 100 MiB")
-    if report is not None and sha256(path) != report["submitted_pdf_sha256"]:
-        raise RetireError("归档后的 submitted.pdf 与验证报告 SHA-256 不一致")
+    if sha256(path) != expected_sha256:
+        raise RetireError("归档后的 submitted.pdf 与计划 SHA-256 不一致")
 
 
-def publish_stage_no_replace(stage: Path, destination: Path) -> None:
+def publish_stage_no_replace(stage: Path, destination_name: str, parent_fd: int) -> None:
     """Reserve the final name exclusively, then atomically replace our reservation."""
     try:
-        destination.mkdir()
+        os.mkdir(destination_name, 0o700, dir_fd=parent_fd)
     except FileExistsError as exc:
-        raise RetireError(f"目标已存在，拒绝覆盖: {destination}") from exc
+        raise RetireError(f"目标已存在，拒绝覆盖: {destination_name}") from exc
     reserved = True
     try:
-        os.replace(stage, destination)
+        os.rename(
+            stage.name,
+            destination_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
         reserved = False
     except OSError as exc:
-        raise RetireError(f"无法原子发布归档: {destination}") from exc
+        raise RetireError(f"无法原子发布归档: {destination_name}") from exc
     finally:
         if reserved:
             try:
-                destination.rmdir()
+                os.rmdir(destination_name, dir_fd=parent_fd)
             except OSError:
                 pass
 
@@ -594,6 +677,13 @@ def plan_retire(args: argparse.Namespace) -> dict[str, object]:
     total, too_large = size_summary(package_inputs)
     if too_large:
         raise RetireError("单文件达到 100 MiB: " + ", ".join(str(path) for path in too_large))
+    pdf_sha256 = sha256(pdf)
+    if (
+        verification_report is not None
+        and verification_report["submitted_pdf_sha256"] != pdf_sha256
+    ):
+        raise RetireError("验证报告的提交 PDF SHA-256 与计划快照不一致")
+    included_sha256 = {path: sha256(path) for path in included}
     commit, dirty = git_metadata(root)
     file_states = git_file_states(root, [pdf, *included])
     future_files = [
@@ -612,8 +702,10 @@ def plan_retire(args: argparse.Namespace) -> dict[str, object]:
         "source": source,
         "source_rel": str(source.relative_to(root)),
         "pdf": pdf,
+        "pdf_sha256": pdf_sha256,
         "destination": destination,
         "included": included,
+        "included_sha256": included_sha256,
         "excluded": excluded,
         "total_bytes": total,
         "size_warning": total > WARN_TOTAL_BYTES,
@@ -656,19 +748,25 @@ def display_plan(plan: dict[str, object]) -> None:
 
 def apply_retire(args: argparse.Namespace, plan: dict[str, object]) -> None:
     destination: Path = plan["destination"]
-    parent = destination.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=f".{args.slug}-", dir=parent))
+    parent_fd = open_project_directory(
+        plan["root"], Path("archive") / "docs" / "paper", create=True
+    )
+    previous_cwd_fd = os.open(".", directory_open_flags())
+    stage: Path | None = None
     try:
-        copy_regular_file(plan["pdf"], stage / "submitted.pdf")
+        os.fchdir(parent_fd)
+        stage = Path(tempfile.mkdtemp(prefix=f".{args.slug}-", dir="."))
+        copy_regular_file(
+            plan["pdf"], stage / "submitted.pdf", plan["pdf_sha256"]
+        )
         stage_source = stage / "source"
         stage_source.mkdir()
         for path in plan["included"]:
             rel = path.relative_to(plan["source"])
             target = stage_source / rel
-            copy_regular_file(path, target)
+            copy_regular_file(path, target, plan["included_sha256"][path])
         report = plan["verification_report"]
-        validate_staged_pdf(stage / "submitted.pdf", report)
+        validate_staged_pdf(stage / "submitted.pdf", plan["pdf_sha256"])
         if report is None:
             verification = verify_latex(stage_source, args.main_tex, args.allow_unverified)
             verification_method = "built-in-latex"
@@ -694,11 +792,15 @@ def apply_retire(args: argparse.Namespace, plan: dict[str, object]) -> None:
         failures = verify_checksums(stage)
         if failures:
             raise RetireError("归档后校验失败: " + "; ".join(failures))
-        publish_stage_no_replace(stage, destination)
+        publish_stage_no_replace(stage, destination.name, parent_fd)
     except Exception:
-        if stage.exists():
+        if stage is not None and stage.exists():
             shutil.rmtree(stage)
         raise
+    finally:
+        os.fchdir(previous_cwd_fd)
+        os.close(previous_cwd_fd)
+        os.close(parent_fd)
     print(f"verification: {verification}")
     print(f"retired: {destination.relative_to(plan['root'])}")
 

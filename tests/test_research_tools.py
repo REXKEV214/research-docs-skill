@@ -493,6 +493,47 @@ latexmk -xelatex main.tex
                     self.assertEqual(result.returncode, 2, result.stdout)
             self.assertFalse(self.archive_path(root).exists())
 
+    def test_hybrid_mode_ignores_headings_inside_longer_fenced_code_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            fenced_sections = "\n\n".join(
+                f"## {heading}\n\nonly code"
+                for heading in (
+                    "项目简介",
+                    "版本定位",
+                    "归档内容",
+                    "编译与复现",
+                    "验证",
+                    "与其他版本的关系",
+                    "权威来源",
+                )
+            )
+            readme_body.write_text(
+                f"# 课程论文\n\n````markdown\n```\n{fenced_sections}\n````\n",
+                encoding="utf-8",
+            )
+
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--verification-report",
+                str(report),
+                "--readme-body",
+                str(readme_body),
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("README 正文缺少章节", result.stdout)
+
     def test_hybrid_mode_requires_report_and_readme_body_as_a_pair(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -636,6 +677,34 @@ latexmk -xelatex main.tex
             self.assertFalse(self.archive_path(root).exists())
             self.assertFalse(any((root / "archive" / "docs" / "paper").glob(".course-paper-*")))
 
+    def test_builtin_apply_revalidates_pdf_against_the_plan(self) -> None:
+        retire = load_retire_module()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            args = argparse.Namespace(
+                root=str(root),
+                source="paper",
+                include=[],
+                slug="course-paper",
+                pdf=None,
+                main_tex="main.tex",
+                date="2026-08-23",
+                apply=True,
+                allow_unverified=True,
+                verification_report=None,
+                readme_body=None,
+            )
+            plan = retire.plan_retire(args)
+            (root / "paper" / "main.pdf").write_bytes(
+                b"%PDF-1.4\na different valid PDF after plan\n"
+            )
+
+            with self.assertRaises(retire.RetireError):
+                retire.apply_retire(args, plan)
+
+            self.assertFalse(self.archive_path(root).exists())
+
     def test_apply_rejects_source_replaced_by_symlink_after_plan(self) -> None:
         retire = load_retire_module()
         with tempfile.TemporaryDirectory() as raw:
@@ -655,6 +724,78 @@ latexmk -xelatex main.tex
                 retire.apply_retire(args, plan)
 
             self.assertFalse(self.archive_path(root).exists())
+
+    def test_apply_rejects_source_parent_replaced_by_symlink_after_plan(self) -> None:
+        retire = load_retire_module()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            args = self.retire_args(root, report, readme_body)
+            plan = retire.plan_retire(args)
+            original = root / "paper-original"
+            (root / "paper").rename(original)
+            (root / "paper").symlink_to(original, target_is_directory=True)
+
+            with self.assertRaises(retire.RetireError):
+                retire.apply_retire(args, plan)
+
+            self.assertFalse(self.archive_path(root).exists())
+
+    def test_apply_rejects_archive_parent_replaced_by_symlink_after_plan(self) -> None:
+        retire = load_retire_module()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "project"
+            outside = Path(raw) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            args = self.retire_args(root, report, readme_body)
+            plan = retire.plan_retire(args)
+            (root / "archive").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(retire.RetireError):
+                retire.apply_retire(args, plan)
+
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_copy_regular_file_rejects_fifo_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fifo = root / "planned.tex"
+            target = root / "copied.tex"
+            os.mkfifo(fifo)
+            code = f"""
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('research_retire_fifo', {str(RETIRE)!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.copy_regular_file(Path(sys.argv[1]), Path(sys.argv[2]))
+except module.RetireError:
+    raise SystemExit(0)
+raise SystemExit(3)
+"""
+            process = subprocess.Popen(
+                [sys.executable, "-c", code, str(fifo), str(target)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            try:
+                stdout, _ = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                self.fail("copy_regular_file blocked on a FIFO")
+
+            self.assertEqual(process.returncode, 0, stdout)
+            self.assertFalse(target.exists())
 
     def test_apply_does_not_replace_destination_created_after_plan(self) -> None:
         retire = load_retire_module()
@@ -1011,6 +1152,66 @@ class InstallerTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertEqual(marker.read_text(encoding="utf-8"), "original\n")
             self.assertEqual(codex_target.read_text(encoding="utf-8"), "not a directory\n")
+
+    def test_install_rolls_back_a_partial_second_target_move(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            claude = root / "claude"
+            codex = root / "codex"
+            claude_target = claude / "skills" / "research"
+            codex_target = codex / "skills" / "research"
+            for target, marker_text in (
+                (claude_target, "claude-original\n"),
+                (codex_target, "codex-original\n"),
+            ):
+                target.mkdir(parents=True)
+                (target / "keep.txt").write_text(marker_text, encoding="utf-8")
+
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir()
+            fake_mv = fake_bin / "mv"
+            fake_mv.write_text(
+                """#!/bin/bash
+source_path="$1"
+target_path="$2"
+if [[ "$target_path" == "$FAIL_TARGET" && "$source_path" == *research-skill-install* ]]; then
+  mkdir -p "$target_path"
+  printf 'partial\n' > "$target_path/partial.txt"
+  exit 1
+fi
+exec /bin/mv "$@"
+""",
+                encoding="utf-8",
+            )
+            fake_mv.chmod(0o755)
+
+            env = os.environ.copy()
+            env["CLAUDE_CONFIG_DIR"] = str(claude)
+            env["CODEX_HOME"] = str(codex)
+            env["FAIL_TARGET"] = str(codex_target)
+            env["PATH"] = f"{fake_bin}:{env['PATH']}"
+            result = subprocess.run(
+                ["bash", str(INSTALL), "--local"],
+                cwd=root,
+                env=env,
+                text=True,
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(
+                (claude_target / "keep.txt").read_text(encoding="utf-8"),
+                "claude-original\n",
+            )
+            self.assertEqual(
+                (codex_target / "keep.txt").read_text(encoding="utf-8"),
+                "codex-original\n",
+            )
+            self.assertFalse((codex_target / "partial.txt").exists())
+            self.assertFalse(any(codex_target.glob("research.backup.*")))
 
 
 if __name__ == "__main__":
