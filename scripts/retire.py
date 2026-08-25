@@ -33,6 +33,16 @@ SKIP_PREFIXES = ("PAPER_CLAIM_AUDIT", "PAPER_IMPROVEMENT_")
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 WARN_TOTAL_BYTES = 50 * 1024 * 1024
 MAX_FILE_BYTES = 100 * 1024 * 1024
+VERIFICATION_SCHEMA_VERSION = 1
+REQUIRED_README_HEADINGS = (
+    "项目简介",
+    "版本定位",
+    "归档内容",
+    "编译与复现",
+    "验证",
+    "与其他版本的关系",
+    "权威来源",
+)
 
 
 class RetireError(RuntimeError):
@@ -72,6 +82,90 @@ def root_path(root: Path, value: str) -> Path:
     if not candidate.is_absolute():
         candidate = root / candidate
     return inside(root, candidate)
+
+
+def input_file(value: str, label: str) -> Path:
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise RetireError(f"{label}不存在: {path}")
+    return path
+
+
+def validate_readme_body(path: Path) -> str:
+    try:
+        body = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RetireError(f"无法读取 README 正文: {path}") from exc
+    if not re.match(r"^# [^#\n].*", body):
+        raise RetireError("README 正文必须以一级标题开头")
+    missing = [
+        heading
+        for heading in REQUIRED_README_HEADINGS
+        if not re.search(rf"(?m)^## {re.escape(heading)}\s*$", body)
+    ]
+    if missing:
+        raise RetireError("README 正文缺少章节: " + ", ".join(missing))
+    return body
+
+
+def validate_verification_report(
+    path: Path, source: Path, submitted_pdf: Path, allow_unverified: bool
+) -> dict[str, object]:
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RetireError(f"验证报告不是有效 JSON: {path}") from exc
+    if not isinstance(report, dict):
+        raise RetireError("验证报告顶层必须是 JSON object")
+    if report.get("schema_version") != VERIFICATION_SCHEMA_VERSION:
+        raise RetireError(
+            f"验证报告 schema_version 必须是 {VERIFICATION_SCHEMA_VERSION}"
+        )
+    status = report.get("status")
+    if status == "failed":
+        raise RetireError("验证报告状态为 failed，拒绝归档")
+    if status == "not-run" and not allow_unverified:
+        raise RetireError("验证报告状态为 not-run；确认后使用 --allow-unverified")
+    if status not in {"passed", "not-run"}:
+        raise RetireError("验证报告 status 必须是 passed、not-run 或 failed")
+    method = report.get("method")
+    if not isinstance(method, str) or not SLUG_RE.fullmatch(method):
+        raise RetireError("验证报告 method 必须是 lowercase-kebab-case")
+    expected_sha = report.get("submitted_pdf_sha256")
+    if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
+        raise RetireError("验证报告 submitted_pdf_sha256 必须是 SHA-256")
+    if sha256(submitted_pdf) != expected_sha:
+        raise RetireError("验证报告的提交 PDF SHA-256 与当前文件不一致")
+    build_command = report.get("build_command")
+    if not isinstance(build_command, list) or not build_command or not all(
+        isinstance(item, str) and item.strip() for item in build_command
+    ):
+        raise RetireError("验证报告 build_command 必须是非空字符串数组")
+    build_cwd = report.get("build_cwd")
+    if not isinstance(build_cwd, str) or not build_cwd.strip():
+        raise RetireError("验证报告 build_cwd 必须是 source 内的相对目录")
+    build_rel = Path(build_cwd)
+    if build_rel.is_absolute() or ".." in build_rel.parts or str(build_rel) == "":
+        raise RetireError("验证报告 build_cwd 必须是 source 内的相对目录")
+    build_dir = inside(source, source / build_rel)
+    if not build_dir.is_dir():
+        raise RetireError(f"验证报告 build_cwd 不存在: {build_cwd}")
+    checks = report.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise RetireError("验证报告 checks 必须是非空数组")
+    for check in checks:
+        if not isinstance(check, dict):
+            raise RetireError("验证报告 checks 的每一项必须是 object")
+        if not isinstance(check.get("name"), str) or not check["name"].strip():
+            raise RetireError("验证报告 check.name 必须是非空字符串")
+        check_status = check.get("status")
+        if check_status not in {"passed", "not-run"}:
+            raise RetireError("验证报告 check.status 必须是 passed 或 not-run")
+        if status == "passed" and check_status != "passed":
+            raise RetireError("passed 验证报告不能包含未执行的检查")
+        if not isinstance(check.get("detail"), str) or not check["detail"].strip():
+            raise RetireError("验证报告 check.detail 必须是非空字符串")
+    return report
 
 
 def git_metadata(root: Path) -> tuple[str, bool]:
@@ -236,32 +330,41 @@ def write_readme(
     commit: str,
     dirty: bool,
     verification: str,
+    verification_method: str | None = None,
+    body: str | None = None,
 ) -> None:
-    path.write_text(
-        "\n".join(
+    lines = [
+        "---",
+        "status: archived",
+        f"slug: {slug}",
+        f"retired: {retired}",
+        f"source_path: {json.dumps(source_rel, ensure_ascii=False)}",
+        f"source_commit: {commit}",
+        f"working_tree_dirty: {str(dirty).lower()}",
+        f"verification: {verification}",
+    ]
+    if verification_method is not None:
+        lines.append(f"verification_method: {verification_method}")
+    lines.extend(["---", ""])
+    if body is None:
+        lines.extend(
             [
-                "---",
-                "status: archived",
-                f"slug: {slug}",
-                f"retired: {retired}",
-                f"source_path: {json.dumps(source_rel, ensure_ascii=False)}",
-                f"source_commit: {commit}",
-                f"working_tree_dirty: {str(dirty).lower()}",
-                f"verification: {verification}",
-                "---",
-                "",
                 f"# {slug}",
                 "",
                 "这是不可变的正式提交快照，不是实验数字、方法或论文叙事的权威来源。",
                 "",
             ]
-        ),
-        encoding="utf-8",
-    )
+        )
+    else:
+        lines.extend([body.rstrip(), ""])
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def write_checksums(package: Path) -> None:
-    files = [package / "submitted.pdf"] + sorted((package / "source").rglob("*"))
+    files = [package / "submitted.pdf"]
+    if (package / "VERIFICATION.json").is_file():
+        files.append(package / "VERIFICATION.json")
+    files.extend(sorted((package / "source").rglob("*")))
     files = [path for path in files if path.is_file()]
     lines = [f"{sha256(path)}  {path.relative_to(package)}" for path in files]
     (package / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -323,13 +426,29 @@ def plan_retire(args: argparse.Namespace) -> dict[str, object]:
         pdf_header = handle.read(5)
     if pdf_header != b"%PDF-":
         raise RetireError(f"最终文件没有 PDF 标头: {pdf}")
+    if bool(args.verification_report) != bool(args.readme_body):
+        raise RetireError("混合验证必须同时提供 --verification-report 和 --readme-body")
+    verification_report_path: Path | None = None
+    verification_report: dict[str, object] | None = None
+    readme_body_path: Path | None = None
+    readme_body: str | None = None
+    if args.verification_report:
+        verification_report_path = input_file(args.verification_report, "验证报告")
+        readme_body_path = input_file(args.readme_body, "README 正文")
+        verification_report = validate_verification_report(
+            verification_report_path, source, pdf, args.allow_unverified
+        )
+        readme_body = validate_readme_body(readme_body_path)
     destination = inside(root, root / "archive" / "docs" / "paper" / f"{args.date}-{args.slug}")
     if destination.exists():
         raise RetireError(f"目标已存在，拒绝覆盖: {destination}")
     included, excluded = inventory(source, pdf, args.include)
     if not included:
         raise RetireError("未找到可归档源码；请检查 source 或使用 --include 指定必要文件")
-    total, too_large = size_summary([pdf, *included])
+    package_inputs = [pdf, *included]
+    if verification_report_path is not None:
+        package_inputs.extend([verification_report_path, readme_body_path])
+    total, too_large = size_summary(package_inputs)
     if too_large:
         raise RetireError("单文件达到 100 MiB: " + ", ".join(str(path) for path in too_large))
     commit, dirty = git_metadata(root)
@@ -340,6 +459,8 @@ def plan_retire(args: argparse.Namespace) -> dict[str, object]:
         destination / "SHA256SUMS",
         *(destination / "source" / path.relative_to(source) for path in included),
     ]
+    if verification_report_path is not None:
+        future_files.append(destination / "VERIFICATION.json")
     ignored_destination = ignored_future_paths(root, future_files)
     if ignored_destination:
         raise RetireError("归档目标会被 Git 忽略: " + ", ".join(ignored_destination))
@@ -356,6 +477,10 @@ def plan_retire(args: argparse.Namespace) -> dict[str, object]:
         "source_commit": commit,
         "working_tree_dirty": dirty,
         "file_states": file_states,
+        "verification_report_path": verification_report_path,
+        "verification_report": verification_report,
+        "readme_body_path": readme_body_path,
+        "readme_body": readme_body,
     }
 
 
@@ -371,6 +496,12 @@ def display_plan(plan: dict[str, object]) -> None:
     print(f"total bytes: {plan['total_bytes']}")
     if plan["size_warning"]:
         print("warning: package exceeds 50 MiB")
+    if plan["verification_report"] is not None:
+        print(f"verification report: {plan['verification_report_path']}")
+        print(f"verification method: {plan['verification_report']['method']}")
+        print(f"README body: {plan['readme_body_path']}")
+    else:
+        print("verification method: built-in-latex")
     print("included source:")
     for path in plan["included"]:
         root_rel = str(path.relative_to(root))
@@ -394,7 +525,17 @@ def apply_retire(args: argparse.Namespace, plan: dict[str, object]) -> None:
             target = stage_source / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, target)
-        verification = verify_latex(stage_source, args.main_tex, args.allow_unverified)
+        report = plan["verification_report"]
+        if report is None:
+            verification = verify_latex(stage_source, args.main_tex, args.allow_unverified)
+            verification_method = "built-in-latex"
+        else:
+            (stage / "VERIFICATION.json").write_text(
+                json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            verification = str(report["status"])
+            verification_method = str(report["method"])
         write_readme(
             stage / "README.md",
             args.slug,
@@ -403,6 +544,8 @@ def apply_retire(args: argparse.Namespace, plan: dict[str, object]) -> None:
             plan["source_commit"],
             plan["working_tree_dirty"],
             verification,
+            verification_method,
+            plan["readme_body"],
         )
         write_checksums(stage)
         failures = verify_checksums(stage)
@@ -428,6 +571,8 @@ def main() -> int:
     parser.add_argument("--date", default=dt.date.today().isoformat())
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--allow-unverified", action="store_true")
+    parser.add_argument("--verification-report")
+    parser.add_argument("--readme-body")
 
     args = parser.parse_args()
     try:

@@ -37,10 +37,12 @@
 ## 文档与交付物生命周期
 
 ```text
-paper/（唯一活跃工作稿）
+paper/（默认活跃工作稿）或显式指定的项目内 source/
   → retire
 archive/docs/paper/YYYY-MM-DD-<slug>/（不可变冷归档）
 ```
+
+`retire` 只处理论文、课程报告等学术交付物；普通工程项目的发布包和工程文档不进入这条生命周期。归档包保存提交 PDF、可复现源码、项目化 README、结构化验证报告和 SHA-256 清单。
 
 Handoff 状态：
 

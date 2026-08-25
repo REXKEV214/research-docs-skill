@@ -204,6 +204,298 @@ class RetireTests(unittest.TestCase):
     def archive_path(self, root: Path, slug: str = "course-paper") -> Path:
         return root / "archive" / "docs" / "paper" / f"2026-08-23-{slug}"
 
+    def write_hybrid_inputs(
+        self, root: Path, pdf: Path, build_cwd: str = "."
+    ) -> tuple[Path, Path]:
+        report = root / "verification.json"
+        report.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "passed",
+                    "method": "agent-isolated-build",
+                    "submitted_pdf_sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
+                    "build_command": ["latexmk", "-xelatex", "main.tex"],
+                    "build_cwd": build_cwd,
+                    "checks": [
+                        {
+                            "name": "isolated-build",
+                            "status": "passed",
+                            "detail": "build completed",
+                        },
+                        {
+                            "name": "submitted-pdf",
+                            "status": "passed",
+                            "detail": "19 pages, A4",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        readme_body = root / "archive-readme.md"
+        readme_body.write_text(
+            """# 双语共读故事生成中的服务不对称
+
+## 项目简介
+
+本项目研究双语故事生成中的服务不对称。
+
+## 版本定位
+
+这是课程平台实际接收的提交版本。
+
+## 归档内容
+
+`submitted.pdf` 是提交文件，`source/` 保存可复现源码。
+
+## 编译与复现
+
+```bash
+cd source/tex
+latexmk -xelatex main.tex
+```
+
+## 验证
+
+隔离构建和 PDF 检查均通过。
+
+## 与其他版本的关系
+
+本版本取代较早的研究草稿，作为课程交付记录。
+
+## 权威来源
+
+归档记录提交内容；实验数字仍以项目结果文档为准。
+""",
+            encoding="utf-8",
+        )
+        return report, readme_body
+
+    def test_hybrid_mode_archives_agent_report_and_rich_readme_for_custom_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            source = root / "term_paper"
+            (source / "tex").mkdir(parents=True)
+            (source / "README.md").write_text("build instructions\n", encoding="utf-8")
+            (source / "tex" / "main.tex").write_text(
+                "\\documentclass{article}\n\\begin{document}\nTest\n\\end{document}\n",
+                encoding="utf-8",
+            )
+            pdf = source / "submitted-course-paper.pdf"
+            pdf.write_bytes(b"%PDF-1.4\nsubmitted\n")
+            report, readme_body = self.write_hybrid_inputs(root, pdf, build_cwd="tex")
+
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--source",
+                "term_paper",
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--pdf",
+                str(pdf),
+                "--main-tex",
+                "tex/main.tex",
+                "--include",
+                "README.md",
+                "--verification-report",
+                str(report),
+                "--readme-body",
+                str(readme_body),
+                "--apply",
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            archive = self.archive_path(root)
+            self.assertEqual(
+                json.loads((archive / "VERIFICATION.json").read_text(encoding="utf-8"))["method"],
+                "agent-isolated-build",
+            )
+            readme = (archive / "README.md").read_text(encoding="utf-8")
+            self.assertIn('source_path: "term_paper"', readme)
+            self.assertIn("verification_method: agent-isolated-build", readme)
+            self.assertIn("# 双语共读故事生成中的服务不对称", readme)
+            self.assertNotIn("# course-paper", readme)
+            self.assertIn("## 编译与复现", readme)
+            self.assertIn("这是课程平台实际接收的提交版本", readme)
+            checksums = (archive / "SHA256SUMS").read_text(encoding="utf-8")
+            self.assertIn("  VERIFICATION.json", checksums)
+            self.assertTrue((archive / "source" / "README.md").is_file())
+            self.assertTrue((archive / "source" / "tex" / "main.tex").is_file())
+
+    def test_hybrid_mode_rejects_report_for_different_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            payload["submitted_pdf_sha256"] = "0" * 64
+            report.write_text(json.dumps(payload), encoding="utf-8")
+
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--verification-report",
+                str(report),
+                "--readme-body",
+                str(readme_body),
+                "--apply",
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("SHA-256", result.stdout)
+            self.assertFalse(self.archive_path(root).exists())
+
+    def test_hybrid_mode_requires_a_document_title(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            body = readme_body.read_text(encoding="utf-8")
+            readme_body.write_text(body.split("\n", 2)[2], encoding="utf-8")
+
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--verification-report",
+                str(report),
+                "--readme-body",
+                str(readme_body),
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("README 正文必须以一级标题开头", result.stdout)
+            self.assertFalse(self.archive_path(root).exists())
+
+    def test_hybrid_mode_requires_report_and_readme_body_as_a_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, _ = self.write_hybrid_inputs(root, pdf)
+
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--verification-report",
+                str(report),
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("必须同时提供", result.stdout)
+            self.assertFalse(self.archive_path(root).exists())
+
+    def test_hybrid_mode_requires_confirmation_for_not_run_report(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            payload["status"] = "not-run"
+            payload["checks"] = [
+                {
+                    "name": "isolated-build",
+                    "status": "not-run",
+                    "detail": "TeX toolchain unavailable",
+                }
+            ]
+            report.write_text(json.dumps(payload), encoding="utf-8")
+
+            rejected = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--verification-report",
+                str(report),
+                "--readme-body",
+                str(readme_body),
+                cwd=root,
+            )
+            accepted = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--verification-report",
+                str(report),
+                "--readme-body",
+                str(readme_body),
+                "--allow-unverified",
+                cwd=root,
+            )
+
+            self.assertEqual(rejected.returncode, 2, rejected.stdout)
+            self.assertIn("--allow-unverified", rejected.stdout)
+            self.assertEqual(accepted.returncode, 0, accepted.stdout)
+            self.assertFalse(self.archive_path(root).exists())
+
+    def test_hybrid_mode_requires_complete_readme_body(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            readme_body.write_text(
+                "# 课程论文\n\n## 项目简介\n\n内容不完整。\n", encoding="utf-8"
+            )
+
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--verification-report",
+                str(report),
+                "--readme-body",
+                str(readme_body),
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("README 正文缺少章节", result.stdout)
+            self.assertIn("编译与复现", result.stdout)
+            self.assertFalse(self.archive_path(root).exists())
+
     def test_retire_is_dry_run_then_creates_minimal_verified_archive(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -10,6 +10,7 @@ allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob, Agent
 
 ## 核心原则
 
+- **学术范围**：只管理科研与论文项目中的研究记忆和正式学术交付物；普通前后端、产品或基础设施项目的工程文档不使用本 skill。
 - **事件驱动**：正常编码和实验不调用本 skill；只在权威信息变化、上下文切换、阶段检查或正式交付时调用。
 - **单一来源**：实验数字 → `docs/evaluation/results.md`；方法 → `docs/methods/`；论文叙事 → `docs/project/paper-plan.md`。
 - **按需创建**：`init` 默认只建最小骨架；journal、dashboard、ARIS 等模块首次使用时再创建。
@@ -31,7 +32,7 @@ allowed-tools: Bash(*), Read, Write, Edit, Grep, Glob, Agent
 | `update [results|methods|project]` | [references/update.md](references/update.md) | 无参数只报告；指定目标才修改 |
 | `handoff` | [references/handoff.md](references/handoff.md) | 写一个新 active，历史化旧 active |
 | `log [date] [--commit]` | [references/log.md](references/log.md) | 默认只写 journal；commit 必确认 |
-| `retire <slug> [source-dir]` | [references/retire.md](references/retire.md) | 先 dry-run；确认后直接归档 |
+| `retire <slug> [source-dir]` | [references/retire.md](references/retire.md) | 智能体验证，脚本 dry-run；确认后归档 |
 | `dashboard ...` | [references/dashboards.md](references/dashboards.md) | 按子命令 |
 | `aris ...` | [references/aris.md](references/aris.md) | 先列清单 |
 
