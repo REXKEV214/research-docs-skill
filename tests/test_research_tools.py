@@ -1242,6 +1242,35 @@ exec /bin/mv "$@"
             self.assertEqual({path.name for path in target.iterdir()}, {"keep.txt"})
             self.assertFalse(any(target.parent.glob("research.backup.*")))
 
+    def test_install_rejects_casefolded_target_aliases(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            shared = root / "shared"
+            target = shared / "skills" / "research"
+            target.mkdir(parents=True)
+            marker = target / "keep.txt"
+            marker.write_text("original\n", encoding="utf-8")
+
+            env = os.environ.copy()
+            env["CLAUDE_CONFIG_DIR"] = str(shared)
+            env["CODEX_HOME"] = str(root / "SHARED")
+            result = subprocess.run(
+                ["bash", str(INSTALL), "--local"],
+                cwd=root,
+                env=env,
+                text=True,
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("重合", result.stdout)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "original\n")
+            self.assertEqual({path.name for path in target.iterdir()}, {"keep.txt"})
+            self.assertFalse(any(target.parent.glob("research.backup.*")))
+
 
 if __name__ == "__main__":
     unittest.main()

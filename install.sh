@@ -40,23 +40,45 @@ OLD_SKILL_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/docs"
 OLD_HOOK_FILE="$HOOKS_DIR/docs-hook.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-canonical_target() {
-  python3 - "$1" <<'PY'
+if ! python3 - "$CLAUDE_SKILL_DIR" "$CODEX_SKILL_DIR" <<'PY'
+import os
 import sys
+import unicodedata
 from pathlib import Path
 
-print(Path(sys.argv[1]).expanduser().resolve(strict=False))
-PY
-}
 
-CLAUDE_SKILL_CANONICAL=$(canonical_target "$CLAUDE_SKILL_DIR")
-CODEX_SKILL_CANONICAL=$(canonical_target "$CODEX_SKILL_DIR")
-if [[ "$CLAUDE_SKILL_CANONICAL" == "$CODEX_SKILL_CANONICAL" \
-   || "$CLAUDE_SKILL_CANONICAL" == "$CODEX_SKILL_CANONICAL/"* \
-   || "$CODEX_SKILL_CANONICAL" == "$CLAUDE_SKILL_CANONICAL/"* ]]; then
+def resolved(path: str) -> Path:
+    return Path(path).expanduser().resolve(strict=False)
+
+
+def comparison_key(path: Path) -> str:
+    return unicodedata.normalize("NFC", os.fspath(path)).casefold()
+
+
+def same_existing_path(left: Path, right: Path) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
+def is_same_or_ancestor(left: Path, right: Path) -> bool:
+    left_key = comparison_key(left)
+    right_key = comparison_key(right)
+    if left_key == right_key or right_key.startswith(left_key + os.sep):
+        return True
+    return any(same_existing_path(left, candidate) for candidate in (right, *right.parents))
+
+
+claude = resolved(sys.argv[1])
+codex = resolved(sys.argv[2])
+if is_same_or_ancestor(claude, codex) or is_same_or_ancestor(codex, claude):
+    raise SystemExit(1)
+PY
+then
   echo "Claude 与 Codex 的 research skill 安装目标重合，已中止：" >&2
-  echo "  Claude: $CLAUDE_SKILL_CANONICAL" >&2
-  echo "  Codex:  $CODEX_SKILL_CANONICAL" >&2
+  echo "  Claude: $CLAUDE_SKILL_DIR" >&2
+  echo "  Codex:  $CODEX_SKILL_DIR" >&2
   exit 1
 fi
 
