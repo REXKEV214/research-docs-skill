@@ -70,6 +70,8 @@ cd research-session-flow
 
 安装脚本只复制全局 skill，不创建或修改任何项目的 `CLAUDE.md`、`AGENTS.md` 或 `docs/`。项目文件只由显式 `/research init` 创建。
 
+Claude 与 Codex 两个目标会先完成预检和暂存，再作为一个安装事务切换；任一目标失败时恢复已经替换的目标，避免两端版本不一致。
+
 ### 更新与本地开发
 
 ```bash

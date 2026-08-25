@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -26,6 +28,15 @@ def run_script(script: Path, *args: str, cwd: Path) -> subprocess.CompletedProce
         stderr=subprocess.STDOUT,
         check=False,
     )
+
+
+def load_retire_module():
+    spec = importlib.util.spec_from_file_location("research_retire", RETIRE)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load retire.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class ResearchAuditTests(unittest.TestCase):
@@ -215,7 +226,7 @@ class RetireTests(unittest.TestCase):
                     "status": "passed",
                     "method": "agent-isolated-build",
                     "submitted_pdf_sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
-                    "build_command": ["latexmk", "-xelatex", "main.tex"],
+                    "build_command": ["latexmk -xelatex main.tex"],
                     "build_cwd": build_cwd,
                     "checks": [
                         {
@@ -275,6 +286,28 @@ latexmk -xelatex main.tex
         )
         return report, readme_body
 
+    def retire_args(
+        self,
+        root: Path,
+        report: Path,
+        readme_body: Path,
+        *,
+        allow_unverified: bool = False,
+    ) -> argparse.Namespace:
+        return argparse.Namespace(
+            root=str(root),
+            source="paper",
+            include=[],
+            slug="course-paper",
+            pdf=None,
+            main_tex="main.tex",
+            date="2026-08-23",
+            apply=True,
+            allow_unverified=allow_unverified,
+            verification_report=str(report),
+            readme_body=str(readme_body),
+        )
+
     def test_hybrid_mode_archives_agent_report_and_rich_readme_for_custom_source(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -328,6 +361,7 @@ latexmk -xelatex main.tex
             self.assertIn("## 编译与复现", readme)
             self.assertIn("这是课程平台实际接收的提交版本", readme)
             checksums = (archive / "SHA256SUMS").read_text(encoding="utf-8")
+            self.assertIn("  README.md", checksums)
             self.assertIn("  VERIFICATION.json", checksums)
             self.assertTrue((archive / "source" / "README.md").is_file())
             self.assertTrue((archive / "source" / "tex" / "main.tex").is_file())
@@ -362,6 +396,35 @@ latexmk -xelatex main.tex
             self.assertIn("SHA-256", result.stdout)
             self.assertFalse(self.archive_path(root).exists())
 
+    def test_hybrid_mode_rejects_failed_report(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            payload["status"] = "failed"
+            report.write_text(json.dumps(payload), encoding="utf-8")
+
+            result = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--verification-report",
+                str(report),
+                "--readme-body",
+                str(readme_body),
+                cwd=root,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("failed", result.stdout)
+            self.assertFalse(self.archive_path(root).exists())
+
     def test_hybrid_mode_requires_a_document_title(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -388,6 +451,46 @@ latexmk -xelatex main.tex
 
             self.assertEqual(result.returncode, 2, result.stdout)
             self.assertIn("README 正文必须以一级标题开头", result.stdout)
+            self.assertFalse(self.archive_path(root).exists())
+
+    def test_hybrid_mode_rejects_empty_duplicate_or_reordered_readme_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            original = readme_body.read_text(encoding="utf-8")
+            cases = {
+                "empty": original.replace(
+                    "## 验证\n\n隔离构建和 PDF 检查均通过。",
+                    "## 验证\n",
+                ),
+                "duplicate": original + "\n## 验证\n\n重复。\n",
+                "reordered": original.replace(
+                    "## 项目简介\n\n本项目研究双语故事生成中的服务不对称。\n\n"
+                    "## 版本定位\n\n这是课程平台实际接收的提交版本。",
+                    "## 版本定位\n\n这是课程平台实际接收的提交版本。\n\n"
+                    "## 项目简介\n\n本项目研究双语故事生成中的服务不对称。",
+                ),
+            }
+            for label, body in cases.items():
+                with self.subTest(label=label):
+                    readme_body.write_text(body, encoding="utf-8")
+                    result = run_script(
+                        RETIRE,
+                        "--root",
+                        str(root),
+                        "--slug",
+                        "course-paper",
+                        "--date",
+                        "2026-08-23",
+                        "--verification-report",
+                        str(report),
+                        "--readme-body",
+                        str(readme_body),
+                        cwd=root,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stdout)
             self.assertFalse(self.archive_path(root).exists())
 
     def test_hybrid_mode_requires_report_and_readme_body_as_a_pair(self) -> None:
@@ -466,6 +569,26 @@ latexmk -xelatex main.tex
             self.assertEqual(accepted.returncode, 0, accepted.stdout)
             self.assertFalse(self.archive_path(root).exists())
 
+            applied = run_script(
+                RETIRE,
+                "--root",
+                str(root),
+                "--slug",
+                "course-paper",
+                "--date",
+                "2026-08-23",
+                "--verification-report",
+                str(report),
+                "--readme-body",
+                str(readme_body),
+                "--allow-unverified",
+                "--apply",
+                cwd=root,
+            )
+            self.assertEqual(applied.returncode, 0, applied.stdout)
+            readme = (self.archive_path(root) / "README.md").read_text(encoding="utf-8")
+            self.assertIn("verification: not-run", readme)
+
     def test_hybrid_mode_requires_complete_readme_body(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -495,6 +618,108 @@ latexmk -xelatex main.tex
             self.assertIn("README 正文缺少章节", result.stdout)
             self.assertIn("编译与复现", result.stdout)
             self.assertFalse(self.archive_path(root).exists())
+
+    def test_apply_revalidates_staged_pdf_against_report(self) -> None:
+        retire = load_retire_module()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            args = self.retire_args(root, report, readme_body)
+            plan = retire.plan_retire(args)
+            pdf.write_bytes(b"%PDF-1.4\nchanged after plan\n")
+
+            with self.assertRaises(retire.RetireError):
+                retire.apply_retire(args, plan)
+
+            self.assertFalse(self.archive_path(root).exists())
+            self.assertFalse(any((root / "archive" / "docs" / "paper").glob(".course-paper-*")))
+
+    def test_apply_rejects_source_replaced_by_symlink_after_plan(self) -> None:
+        retire = load_retire_module()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            args = self.retire_args(root, report, readme_body)
+            plan = retire.plan_retire(args)
+            main_tex = root / "paper" / "main.tex"
+            replacement = root / "replacement.tex"
+            replacement.write_text("outside source inventory\n", encoding="utf-8")
+            main_tex.unlink()
+            main_tex.symlink_to(replacement)
+
+            with self.assertRaises(retire.RetireError):
+                retire.apply_retire(args, plan)
+
+            self.assertFalse(self.archive_path(root).exists())
+
+    def test_apply_does_not_replace_destination_created_after_plan(self) -> None:
+        retire = load_retire_module()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            args = self.retire_args(root, report, readme_body)
+            plan = retire.plan_retire(args)
+            destination = self.archive_path(root)
+            destination.mkdir(parents=True)
+
+            with self.assertRaises(retire.RetireError):
+                retire.apply_retire(args, plan)
+
+            self.assertTrue(destination.is_dir())
+            self.assertEqual(list(destination.iterdir()), [])
+
+    def test_archive_integrity_covers_readme_and_hybrid_report_semantics(self) -> None:
+        retire = load_retire_module()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            args = self.retire_args(root, report, readme_body)
+            plan = retire.plan_retire(args)
+            retire.apply_retire(args, plan)
+            archive = self.archive_path(root)
+
+            readme = archive / "README.md"
+            readme.write_text(readme.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
+            self.assertTrue(any("README.md" in item for item in retire.verify_checksums(archive)))
+
+            readme.write_text(
+                readme.read_text(encoding="utf-8").removesuffix("tampered\n"),
+                encoding="utf-8",
+            )
+            retire.write_checksums(archive)
+            (archive / "VERIFICATION.json").unlink()
+            retire.write_checksums(archive)
+            self.assertTrue(
+                any("VERIFICATION.json" in item for item in retire.verify_checksums(archive))
+            )
+
+    def test_archive_integrity_revalidates_report_pdf_binding(self) -> None:
+        retire = load_retire_module()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            self.make_project(root)
+            pdf = root / "paper" / "main.pdf"
+            report, readme_body = self.write_hybrid_inputs(root, pdf)
+            args = self.retire_args(root, report, readme_body)
+            plan = retire.plan_retire(args)
+            retire.apply_retire(args, plan)
+            archive = self.archive_path(root)
+            archived_report = archive / "VERIFICATION.json"
+            payload = json.loads(archived_report.read_text(encoding="utf-8"))
+            payload["submitted_pdf_sha256"] = "0" * 64
+            archived_report.write_text(json.dumps(payload), encoding="utf-8")
+            retire.write_checksums(archive)
+
+            failures = retire.verify_checksums(archive)
+            self.assertTrue(any("SHA-256" in item for item in failures), failures)
 
     def test_retire_is_dry_run_then_creates_minimal_verified_archive(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -755,6 +980,37 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(actual, expected)
                 for rel in expected:
                     self.assertEqual((target / rel).read_bytes(), (REPO / rel).read_bytes())
+
+    def test_install_preflight_keeps_both_existing_targets_unchanged_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            claude = root / "claude"
+            codex = root / "codex"
+            claude_target = claude / "skills" / "research"
+            codex_target = codex / "skills" / "research"
+            claude_target.mkdir(parents=True)
+            marker = claude_target / "keep.txt"
+            marker.write_text("original\n", encoding="utf-8")
+            codex_target.parent.mkdir(parents=True)
+            codex_target.write_text("not a directory\n", encoding="utf-8")
+
+            env = os.environ.copy()
+            env["CLAUDE_CONFIG_DIR"] = str(claude)
+            env["CODEX_HOME"] = str(codex)
+            result = subprocess.run(
+                ["bash", str(INSTALL), "--local"],
+                cwd=root,
+                env=env,
+                text=True,
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "original\n")
+            self.assertEqual(codex_target.read_text(encoding="utf-8"), "not a directory\n")
 
 
 if __name__ == "__main__":

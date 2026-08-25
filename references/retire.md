@@ -76,6 +76,8 @@ python3 <skill-dir>/scripts/retire.py --root "$PWD" --slug <slug> ...
 ## 权威来源
 ```
 
+这七个章节必须按上述顺序各出现一次，且每节都要有正文；代码块中的同名标题不计入结构。
+
 内容要求：
 
 - `项目简介`：说明研究问题、数据或方法，不只复述论文标题。
@@ -122,7 +124,7 @@ archive/docs/paper/YYYY-MM-DD-<slug>/
 └── SHA256SUMS
 ```
 
-`SHA256SUMS` 覆盖 `VERIFICATION.json`、`submitted.pdf` 和 `source/` 中全部文件。源码候选默认包括 `.tex/.bib/.sty/.cls/.bst`、LaTeX 配置和图片；排除编译缓存、顶层中间 PDF、review/audit 状态文件和输出目录。作为源码依赖的顶层 PDF 用 `--include <relative-path>` 显式加入。单文件达到 100 MiB 时拒绝；总包超过 50 MiB 时警告。
+`SHA256SUMS` 覆盖 `README.md`、`VERIFICATION.json`、`submitted.pdf` 和 `source/` 中全部文件。full audit 会同时复核报告 schema、提交 PDF 哈希绑定，以及 README 中的验证状态和方法。源码候选默认包括 `.tex/.bib/.sty/.cls/.bst`、LaTeX 配置和图片；排除编译缓存、顶层中间 PDF、review/audit 状态文件和输出目录。作为源码依赖的顶层 PDF 用 `--include <relative-path>` 显式加入。单文件达到 100 MiB 时拒绝；总包超过 50 MiB 时警告。
 
 ### 5. 提交和可选清理
 

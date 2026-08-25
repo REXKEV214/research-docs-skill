@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -98,13 +99,44 @@ def validate_readme_body(path: Path) -> str:
         raise RetireError(f"无法读取 README 正文: {path}") from exc
     if not re.match(r"^# [^#\n].*", body):
         raise RetireError("README 正文必须以一级标题开头")
-    missing = [
-        heading
+    lines = body.splitlines()
+    headings: list[tuple[str, int]] = []
+    fence: str | None = None
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        marker = stripped[:3]
+        if marker in {"```", "~~~"}:
+            if fence is None:
+                fence = marker
+            elif fence == marker:
+                fence = None
+            continue
+        if fence is None and line.startswith("## ") and not line.startswith("### "):
+            headings.append((line[3:].strip(), index))
+    required_counts = {
+        heading: sum(name == heading for name, _ in headings)
         for heading in REQUIRED_README_HEADINGS
-        if not re.search(rf"(?m)^## {re.escape(heading)}\s*$", body)
-    ]
+    }
+    missing = [heading for heading, count in required_counts.items() if count == 0]
     if missing:
         raise RetireError("README 正文缺少章节: " + ", ".join(missing))
+    duplicates = [heading for heading, count in required_counts.items() if count > 1]
+    if duplicates:
+        raise RetireError("README 正文章节重复: " + ", ".join(duplicates))
+    actual_order = [
+        heading for heading, _ in headings if heading in REQUIRED_README_HEADINGS
+    ]
+    if actual_order != list(REQUIRED_README_HEADINGS):
+        raise RetireError("README 正文章节顺序不符合归档 schema")
+    for heading, line_index in headings:
+        if heading not in REQUIRED_README_HEADINGS:
+            continue
+        next_h2 = next(
+            (candidate for _, candidate in headings if candidate > line_index),
+            len(lines),
+        )
+        if not "\n".join(lines[line_index + 1 : next_h2]).strip():
+            raise RetireError(f"README 正文章节内容为空: {heading}")
     return body
 
 
@@ -284,6 +316,69 @@ def size_summary(paths: list[Path]) -> tuple[int, list[Path]]:
     return sum(path.stat().st_size for path in paths), too_large
 
 
+def copy_regular_file(source: Path, target: Path) -> None:
+    """Copy one bounded regular file without following a late symlink swap."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if stat.S_ISLNK(source.lstat().st_mode):
+            raise RetireError(f"归档输入在计划后变为符号链接: {source}")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        source_fd = os.open(source, flags)
+    except RetireError:
+        raise
+    except OSError as exc:
+        raise RetireError(f"无法安全读取归档输入: {source}") from exc
+    try:
+        with os.fdopen(source_fd, "rb") as source_handle:
+            source_stat = os.fstat(source_handle.fileno())
+            if not stat.S_ISREG(source_stat.st_mode):
+                raise RetireError(f"归档输入不是普通文件: {source}")
+            if source_stat.st_size >= MAX_FILE_BYTES:
+                raise RetireError(f"单文件达到 100 MiB: {source}")
+            copied = 0
+            with target.open("xb") as target_handle:
+                for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+                    copied += len(chunk)
+                    if copied >= MAX_FILE_BYTES:
+                        raise RetireError(f"单文件达到 100 MiB: {source}")
+                    target_handle.write(chunk)
+                os.fchmod(target_handle.fileno(), stat.S_IMODE(source_stat.st_mode))
+    except Exception:
+        if target.exists():
+            target.unlink()
+        raise
+
+
+def validate_staged_pdf(path: Path, report: dict[str, object] | None) -> None:
+    with path.open("rb") as handle:
+        if handle.read(5) != b"%PDF-":
+            raise RetireError("归档后的 submitted.pdf 没有 PDF 标头")
+    if path.stat().st_size >= MAX_FILE_BYTES:
+        raise RetireError("归档后的 submitted.pdf 达到 100 MiB")
+    if report is not None and sha256(path) != report["submitted_pdf_sha256"]:
+        raise RetireError("归档后的 submitted.pdf 与验证报告 SHA-256 不一致")
+
+
+def publish_stage_no_replace(stage: Path, destination: Path) -> None:
+    """Reserve the final name exclusively, then atomically replace our reservation."""
+    try:
+        destination.mkdir()
+    except FileExistsError as exc:
+        raise RetireError(f"目标已存在，拒绝覆盖: {destination}") from exc
+    reserved = True
+    try:
+        os.replace(stage, destination)
+        reserved = False
+    except OSError as exc:
+        raise RetireError(f"无法原子发布归档: {destination}") from exc
+    finally:
+        if reserved:
+            try:
+                destination.rmdir()
+            except OSError:
+                pass
+
+
 def remove_compile_outputs(stage_source: Path, original_relpaths: set[Path]) -> None:
     for path in sorted(stage_source.rglob("*"), reverse=True):
         if path.is_file() and path.relative_to(stage_source) not in original_relpaths:
@@ -308,7 +403,13 @@ def verify_latex(stage_source: Path, main_tex: str, allow_unverified: bool) -> s
         raise RetireError("检测到 LaTeX 源码但找不到 latexmk；确认后使用 --allow-unverified")
     original_relpaths = {path.relative_to(stage_source) for path in stage_source.rglob("*") if path.is_file()}
     result = subprocess.run(
-        [latexmk, "-pdf", "-interaction=nonstopmode", "-halt-on-error", str(main_rel)],
+        [
+            latexmk,
+            "-pdf",
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            f"./{main_rel.as_posix()}",
+        ],
         cwd=stage_source,
         text=True,
         stdout=subprocess.PIPE,
@@ -361,13 +462,30 @@ def write_readme(
 
 
 def write_checksums(package: Path) -> None:
-    files = [package / "submitted.pdf"]
+    files = [package / "README.md", package / "submitted.pdf"]
     if (package / "VERIFICATION.json").is_file():
         files.append(package / "VERIFICATION.json")
     files.extend(sorted((package / "source").rglob("*")))
     files = [path for path in files if path.is_file()]
     lines = [f"{sha256(path)}  {path.relative_to(package)}" for path in files]
     (package / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def read_frontmatter(path: Path) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return {}
+    if not lines or lines[0].strip() != "---":
+        return {}
+    metadata: dict[str, str] = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return metadata
+        if ":" in line:
+            key, value = line.split(":", 1)
+            metadata[key.strip()] = value.strip().strip("\"'")
+    return {}
 
 
 def verify_checksums(package: Path) -> list[str]:
@@ -402,12 +520,37 @@ def verify_checksums(package: Path) -> list[str]:
     payload = {
         str(path.relative_to(package))
         for path in package.rglob("*")
-        if path.is_file() and path.name not in {"README.md", "SHA256SUMS"}
+        if path.is_file() and path.name != "SHA256SUMS"
     }
     for raw_rel in sorted(payload - listed):
         failures.append(f"uncovered package file: {raw_rel}")
     if "submitted.pdf" not in listed:
         failures.append("submitted.pdf checksum missing")
+    if "README.md" not in listed:
+        failures.append("README.md checksum missing")
+
+    metadata = read_frontmatter(package / "README.md")
+    method = metadata.get("verification_method")
+    report_path = package / "VERIFICATION.json"
+    if report_path.is_file():
+        if not method or method == "built-in-latex":
+            failures.append("VERIFICATION.json requires a hybrid verification_method")
+        try:
+            report = validate_verification_report(
+                report_path,
+                package / "source",
+                package / "submitted.pdf",
+                allow_unverified=True,
+            )
+        except RetireError as exc:
+            failures.append(f"invalid VERIFICATION.json: {exc}")
+        else:
+            if metadata.get("verification") != report["status"]:
+                failures.append("README verification does not match VERIFICATION.json")
+            if method != report["method"]:
+                failures.append("README verification_method does not match VERIFICATION.json")
+    elif method and method != "built-in-latex":
+        failures.append("VERIFICATION.json missing for hybrid archive")
     return failures
 
 
@@ -517,15 +660,15 @@ def apply_retire(args: argparse.Namespace, plan: dict[str, object]) -> None:
     parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{args.slug}-", dir=parent))
     try:
-        shutil.copy2(plan["pdf"], stage / "submitted.pdf")
+        copy_regular_file(plan["pdf"], stage / "submitted.pdf")
         stage_source = stage / "source"
         stage_source.mkdir()
         for path in plan["included"]:
             rel = path.relative_to(plan["source"])
             target = stage_source / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, target)
+            copy_regular_file(path, target)
         report = plan["verification_report"]
+        validate_staged_pdf(stage / "submitted.pdf", report)
         if report is None:
             verification = verify_latex(stage_source, args.main_tex, args.allow_unverified)
             verification_method = "built-in-latex"
@@ -551,7 +694,7 @@ def apply_retire(args: argparse.Namespace, plan: dict[str, object]) -> None:
         failures = verify_checksums(stage)
         if failures:
             raise RetireError("归档后校验失败: " + "; ".join(failures))
-        os.replace(stage, destination)
+        publish_stage_no_replace(stage, destination)
     except Exception:
         if stage.exists():
             shutil.rmtree(stage)

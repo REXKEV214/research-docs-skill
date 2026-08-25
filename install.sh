@@ -75,22 +75,51 @@ fi
 
 # ── 1. 安装 skill ──────────────────────────────────────────
 
-install_to() {
-  local target="$1"
-  local label="$2"
-  local stage
-  local backup
+targets=("$CLAUDE_SKILL_DIR" "$CODEX_SKILL_DIR")
+labels=("Claude Code" "Codex")
+stages=("" "")
+backups=("" "")
+install_actions=(0 0)
+installed=(0 0)
+INSTALL_TRANSACTION_COMPLETE=0
+
+rollback_install_transaction() {
+  if [[ "$INSTALL_TRANSACTION_COMPLETE" -eq 1 ]]; then
+    return
+  fi
+  local index
+  for (( index=1; index>=0; index-- )); do
+    if [[ "${installed[$index]}" -eq 1 && -d "${targets[$index]}" ]]; then
+      rm -rf -- "${targets[$index]}"
+    fi
+    if [[ -n "${backups[$index]}" && -d "${backups[$index]}" ]]; then
+      mv "${backups[$index]}" "${targets[$index]}"
+    fi
+    if [[ -n "${stages[$index]}" && -d "${stages[$index]}" ]]; then
+      rm -rf -- "${stages[$index]}"
+    fi
+  done
+}
+trap rollback_install_transaction EXIT
+
+for index in 0 1; do
+  target="${targets[$index]}"
+  label="${labels[$index]}"
   echo ""
-  echo "→ 安装 skill 到 $target ($label)"
+  echo "→ 准备安装 skill 到 $target ($label)"
 
   if [[ -d "$target" && "$OVERWRITE" -ne 1 ]]; then
     echo "  已存在，跳过（--update 拉取最新并覆盖；--force 强制同步到远程）"
-    return
+    continue
   fi
-
   if [[ -e "$target" && ! -d "$target" ]]; then
     echo "  ⚠️  安装目标存在且不是目录，已中止：$target" >&2
-    return 1
+    exit 1
+  fi
+  backup="${target}.backup.$$"
+  if [[ -e "$backup" ]]; then
+    echo "  ⚠️  临时备份目标已存在，已中止：$backup" >&2
+    exit 1
   fi
 
   stage=$(mktemp -d "${TMPDIR:-/tmp}/research-skill-install.XXXXXX")
@@ -99,31 +128,42 @@ install_to() {
   cp -f "$SCRIPT_DIR"/references/*.md "$stage/references/"
   cp -f "$SCRIPT_DIR"/scripts/*.py "$stage/scripts/"
   chmod +x "$stage"/scripts/*.py
+  stages[$index]="$stage"
+  backups[$index]="$backup"
+  install_actions[$index]=1
+done
 
+for index in 0 1; do
+  if [[ "${install_actions[$index]}" -ne 1 ]]; then
+    continue
+  fi
+  target="${targets[$index]}"
+  stage="${stages[$index]}"
+  backup="${backups[$index]}"
   mkdir -p "$(dirname "$target")"
   if [[ -d "$target" ]]; then
-    backup="${target}.backup.$$"
-    if [[ -e "$backup" ]]; then
-      echo "  ⚠️  临时备份目标已存在，已中止：$backup" >&2
-      rm -rf -- "$stage"
-      return 1
-    fi
     mv "$target" "$backup"
-    if mv "$stage" "$target"; then
-      rm -rf -- "$backup"
-    else
-      mv "$backup" "$target"
-      rm -rf -- "$stage"
-      return 1
-    fi
   else
-    mv "$stage" "$target"
+    backups[$index]=""
   fi
-  echo "  完成"
-}
+  if ! mv "$stage" "$target"; then
+    echo "  ⚠️  安装失败，正在恢复两个目标。" >&2
+    exit 1
+  fi
+  stages[$index]=""
+  installed[$index]=1
+done
 
-install_to "$CLAUDE_SKILL_DIR" "Claude Code"
-install_to "$CODEX_SKILL_DIR" "Codex"
+INSTALL_TRANSACTION_COMPLETE=1
+trap - EXIT
+for index in 0 1; do
+  if [[ -n "${backups[$index]}" && -d "${backups[$index]}" ]]; then
+    rm -rf -- "${backups[$index]}"
+  fi
+  if [[ "${install_actions[$index]}" -eq 1 ]]; then
+    echo "  ${labels[$index]} 完成"
+  fi
+done
 
 # ── 2. 清理旧 docs 安装 ─────────────────────────────────────
 
