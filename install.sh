@@ -40,6 +40,26 @@ OLD_SKILL_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/docs"
 OLD_HOOK_FILE="$HOOKS_DIR/docs-hook.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+canonical_target() {
+  python3 - "$1" <<'PY'
+import sys
+from pathlib import Path
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=False))
+PY
+}
+
+CLAUDE_SKILL_CANONICAL=$(canonical_target "$CLAUDE_SKILL_DIR")
+CODEX_SKILL_CANONICAL=$(canonical_target "$CODEX_SKILL_DIR")
+if [[ "$CLAUDE_SKILL_CANONICAL" == "$CODEX_SKILL_CANONICAL" \
+   || "$CLAUDE_SKILL_CANONICAL" == "$CODEX_SKILL_CANONICAL/"* \
+   || "$CODEX_SKILL_CANONICAL" == "$CLAUDE_SKILL_CANONICAL/"* ]]; then
+  echo "Claude 与 Codex 的 research skill 安装目标重合，已中止：" >&2
+  echo "  Claude: $CLAUDE_SKILL_CANONICAL" >&2
+  echo "  Codex:  $CODEX_SKILL_CANONICAL" >&2
+  exit 1
+fi
+
 echo "=== research skill 安装 ==="
 
 # ── 0. 同步仓库（--update / --force；--local 明确跳过） ─────
